@@ -581,7 +581,7 @@ tibble(
 # Detección objetiva del codo con uik (Kneedle).
 # El método normaliza ambos ejes a [0,1], traza la recta entre el primer y el
 # último punto, y selecciona el PC cuya distancia perpendicular a esa recta
-# es máxima."
+# es máxima.
 n_eval <- min(20, length(prop_exp))
 codo_pc <- inflection::uik(seq_len(n_eval), prop_exp[seq_len(n_eval)])
 
@@ -1345,26 +1345,7 @@ Sobre el conjunto de test, no visto durante el entrenamiento, el orden reproduce
 
 El acuerdo punto a punto entre lo predicho y lo observado se ve mejor en un gráfico.
 
-```{r pred-obs-reg, fig.width = 12.5, fig.height = 5.2, fig.align = "center", fig.cap = "Figura 11b · Figura combinada para el cuerpo de la memoria. (a) Scree plot del PCA exploratorio. (b) Predicho frente a observado en test para el XGBoost de regresión."}
-n_eval <- min(20, length(prop_exp))
-codo_pc <- inflection::uik(seq_len(n_eval), prop_exp[seq_len(n_eval)])
-scree_df <- tibble(PC = seq_len(n_eval), Prop = prop_exp[seq_len(n_eval)],
-                   Cum = cum_exp[seq_len(n_eval)])
-p_scree <- ggplot(scree_df, aes(x = PC)) +
-  geom_col(aes(y = Prop), fill = HEADER, alpha = 0.85, width = 0.7) +
-  geom_line(aes(y = Cum), color = ACCENT, linewidth = 0.9, linetype = "dashed") +
-  geom_point(aes(y = Cum), color = ACCENT, size = 1.9) +
-  geom_text(aes(y = Cum, label = sprintf("%.0f%%", Cum)),
-            color = ACCENT, size = 2.4, vjust = -0.7) +
-  geom_vline(xintercept = codo_pc, color = "grey40", linetype = "dotted") +
-  annotate("text", x = codo_pc + 0.3, y = max(scree_df$Prop) * 0.9,
-           label = sprintf("Codo (Kneedle):\nPC %d", codo_pc),
-           hjust = 0, color = "grey30", size = 3.0) +
-  scale_x_continuous(breaks = seq(1, n_eval, by = 2)) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
-  labs(x = "Componente principal", y = "Varianza explicada (%)") +
-  theme_tfm(12)
-
+```{r pred-obs-reg, fig.width = 7, fig.height = 5.5, fig.align = "center", fig.cap = "Figura 11b · Predicho frente a observado en el conjunto de test para el XGBoost de regresión. Cada punto es un sujeto; la diagonal discontinua marca la predicción perfecta, la recta el ajuste lineal de la nube y la vertical el umbral clínico de 2 h. La anotación recoge R² y MAE en test."}
 dat_po <- purrr::imap_dfr(modelos_reg, ~ tibble(
   Modelo = .y, obs = df_test$SJL, pred = predict(.x, newdata = df_test))) |>
   dplyr::filter(Modelo == "XGBoost")
@@ -1400,11 +1381,7 @@ p_predobs <- ggplot(dat_po, aes(obs, pred)) +
   theme_tfm(12) +
   theme(legend.position = "bottom")
 
-(p_scree | p_predobs) +
-  plot_layout(widths = c(1.25, 1), guides = "collect") +
-  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
-    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 13))) &
-  theme(legend.position = "bottom")
+p_predobs
 ```
 
 Por último, conviene saber cuánta confianza merece la estimación de test, que se calcula sobre una sola partición. Un bootstrap no paramétrico (2000 remuestreos de los 536 sujetos, sin reentrenar nada) acota esa incertidumbre con un intervalo de confianza al 95 %.
@@ -1951,53 +1928,6 @@ ggplot(df_roc, aes(x = FPR, y = TPR, color = Modelo)) +
 
 Las curvas ROC confirman lo que dice el AUC. Las cuatro se separan con claridad de la diagonal y quedan muy juntas entre sí, con la del XGBoost ligeramente por encima en casi todo el recorrido. Como se entrelazan y apenas se distinguen, la ventaja del XGBoost es pequeña y, según el DeLong, solo significativa frente al SVM. La lectura importante es que la capacidad de ordenar a los sujetos por riesgo es alta y casi idéntica en los cuatro, y que la elección entre ellos se decide en el punto de operación, no en la discriminación.
 
-### Incertidumbre de las métricas en test (bootstrap)
-
-Las cifras de la Tabla 18 son estimaciones sobre una única muestra de test. Para acotar su incertidumbre sin reentrenar nada, se remuestrean por bootstrap los 536 sujetos del test (2000 réplicas) y se recalcula cada métrica del modelo de referencia, lo que da un intervalo de confianza al 95 %.
-
-```{r boot-clf, fig.width = 8, fig.height = 5, fig.align = "center", fig.cap = "Figura 18b · Métricas de clasificación del XGBoost en el test (n = 536, 78 positivos) con su intervalo de confianza al 95 % por bootstrap (2000 remuestreos). El punto es la estimación y la barra el intervalo; la vertical gris marca el azar (0.5). Las métricas centradas en la clase positiva (sensibilidad, PPV, F1) tienen intervalos más anchos por depender de los 78 positivos, mientras que la especificidad y el AUC, apoyados en los negativos, son más precisos."}
-truth_clf_b <- df_test_clf$Alto
-pred_clf_b  <- predict(fit_xgb_clf, df_test_clf)
-prob_clf_b  <- predict(fit_xgb_clf, df_test_clf, type = "prob")[, "Alto"]
-
-metricas_clf_b <- function(t, p, pr) {
-  TP <- sum(p == "Alto" & t == "Alto"); FP <- sum(p == "Alto" & t == "Bajo")
-  FN <- sum(p == "Bajo" & t == "Alto"); TN <- sum(p == "Bajo" & t == "Bajo")
-  sens <- TP / (TP + FN); spec <- TN / (TN + FP); ppv <- TP / (TP + FP)
-  npos <- sum(t == "Alto"); nneg <- sum(t == "Bajo"); r <- rank(pr)
-  auc <- (sum(r[t == "Alto"]) - npos * (npos + 1) / 2) / (npos * nneg)
-  c(`Balanced Accuracy` = (sens + spec) / 2, Sensibilidad = sens,
-    Especificidad = spec, PPV = ppv, F1 = 2 * ppv * sens / (ppv + sens), AUC = auc)
-}
-
-set.seed(0)
-n_clf_b <- length(truth_clf_b)
-bs_clf <- t(replicate(2000, {
-  i <- sample.int(n_clf_b, n_clf_b, replace = TRUE)
-  metricas_clf_b(truth_clf_b[i], pred_clf_b[i], prob_clf_b[i])
-}))
-pe_clf <- metricas_clf_b(truth_clf_b, pred_clf_b, prob_clf_b)
-
-ic_clf <- tibble(
-  Metrica = factor(names(pe_clf), levels = rev(names(pe_clf))),
-  est = pe_clf,
-  lo = apply(bs_clf, 2, quantile, 0.025, na.rm = TRUE),
-  hi = apply(bs_clf, 2, quantile, 0.975, na.rm = TRUE))
-
-ggplot(ic_clf, aes(est, Metrica)) +
-  geom_vline(xintercept = 0.5, color = "grey75", linetype = "dotted") +
-  geom_errorbar(aes(xmin = lo, xmax = hi), orientation = "y", width = 0.22,
-                color = HEADER, linewidth = 0.8) +
-  geom_point(color = ACCENT, size = 3) +
-  geom_text(aes(label = sprintf("%.3f [%.3f, %.3f]", est, lo, hi)),
-            vjust = -1.1, size = 3.2, color = HEADER) +
-  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
-  labs(x = "Valor de la métrica (IC 95 % por bootstrap)", y = NULL,
-       title = "Métricas de clasificación (XGBoost) en test con IC 95 %")
-```
-
-El resultado muestra dos cosas. Las métricas centradas en la clase positiva (sensibilidad, PPV y F1) tienen los intervalos más anchos, porque se sostienen sobre los 78 positivos del test, mientras que la especificidad y el AUC, apoyados en los más de cuatrocientos negativos, son mucho más precisos. Esa es la razón estadística por la que esas métricas no conviene leerlas al cuarto decimal. Y, más importante, incluso los extremos inferiores quedan por encima del azar (la Balanced Accuracy por encima de 0.76 y el AUC por encima de 0.87), de modo que la discriminación del modelo es sólida y no un artefacto del tamaño del test. La comparación estable entre modelos sigue siendo la validación cruzada 5×3, y estos intervalos confirman que el orden observado no se debe al azar.
-
 ---
 
 # 5 · Importancia de variables
@@ -2280,16 +2210,6 @@ sv_B <- shap_xgb_tree(fit_xgb_setB, df_test_B, "SJL")
 shap_legend_es(shapviz::sv_importance(sv_B, kind = "beeswarm", max_display = 15)) +
   labs(title = "Valores SHAP · XGBoost del Set B (sin regularidad del sueño)",
        x = "Contribución SHAP al SJL predicho (h)")
-```
-
-```{r imp-shap-combo, fig.width = 12, fig.height = 5.6, fig.cap = "Figura combinada para el cuerpo de la memoria: (a) importancia del XGBoost de regresión sobre el conjunto completo y (b) valores SHAP del XGBoost del Set B (sin la regularidad del sueño)."}
-p_imp <- plot_importancia(imp_top, NULL) + theme_tfm(11)
-p_shap <- shap_legend_es(shapviz::sv_importance(sv_B, kind = "beeswarm", max_display = 15)) +
-  labs(x = "Contribución SHAP al SJL predicho (h)", y = NULL) +
-  theme_tfm(11)
-(p_imp | p_shap) +
-  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
-    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 13)))
 ```
 
 Más movimiento e intensidad motora en las horas de menor actividad y una fase del sueño más tardía empujan el SJL predicho al alza, mientras que dormir en la franja convencional (22 a 10 h) lo empuja a la baja.
@@ -2670,18 +2590,6 @@ importancia_top(fit_xgb_rfeB) |>
                    fill = ACCENT)
 ```
 
-```{r rfe-imp-shap-combo, fig.width = 12, fig.height = 5.6, fig.cap = "Figura para el cuerpo de la memoria: (a) importancia y (b) valores SHAP del XGBoost del modelo parsimonioso (los 30 predictores del RFE sobre el Set B)."}
-p_imp_rfe <- importancia_top(fit_xgb_rfeB) |>
-  plot_importancia(NULL, fill = ACCENT) + theme_tfm(11)
-sv_rfeB <- shap_xgb_tree(fit_xgb_rfeB, df_test_B, "SJL")
-p_shap_rfe <- shap_legend_es(shapviz::sv_importance(sv_rfeB, kind = "beeswarm", max_display = 15)) +
-  labs(x = "Contribución SHAP al SJL predicho (h)", y = NULL) +
-  theme_tfm(11)
-(p_imp_rfe | p_shap_rfe) +
-  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
-    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 13)))
-```
-
 Las 30 variables del modelo parsimonioso pertenecen a las mismas familias que ya dominaban el Set B completo. Encabezan el movimiento en las ventanas de menor señal (`tiempomov_valorl5` y `tiempomov_valorl10`) y la fase del ritmo (`sleep_horal5decimal` y `sleep_horal10decimal`), seguidos de la intensidad de la actividad y de los promedios del sueño y su entorno (la actividad durante el sueño y en las horas previas, `media_tiempoactividadensueno` y `media_actividad2hantessueno`), con la edad como única variable demográfica entre las quince más influyentes. Confirma que la capacidad predictiva genuina, una vez fuera la circularidad, descansa en un núcleo estable de marcadores de movimiento, fase, actividad y sueño.
 
 Varias de las ventanas más influyentes no son las que por convención describen su canal. Es consecuencia de haber incorporado la batería no paramétrica completa, sin pre-seleccionar para cada variable la ventana que la caracteriza, con el fin de no descartar señal a priori. El comportamiento resultante es interpretable. En el tiempo en movimiento, la ventana de 5 h de menor actividad (`tiempomov_valorl5`), que aísla el núcleo del sueño nocturno, encabeza la importancia por ganancia y su SHAP se extiende más que el de la ventana de 10 h (`tiempomov_valorl10`), que ensancha ese tramo hasta mezclar el sueño con las horas contiguas. Y la variable que más mueve la predicción, la hora del tramo de menor sueño (`sleep_horal5decimal`), es un marcador de fase y no una cantidad de sueño diurno, ya que su contribución crece de forma monótona con la hora del tramo, de modo que un mínimo de sueño más tardío, propio de un ritmo retrasado, eleva el SJL predicho.
@@ -2690,6 +2598,8 @@ Varias de las ventanas más influyentes no son las que por convención describen
 # Magnitud y direccion SHAP de las tres variables que encabezan el modelo parsimonioso.
 # |SHAP| medio = contribucion media (h); rho = Spearman(valor, SHAP), positivo si los valores
 # altos elevan el SJL predicho; contribucion maxima = mayor SHAP positivo observado.
+sv_rfeB <- shap_xgb_tree(fit_xgb_rfeB, df_test_B, "SJL")  # SHAP del modelo parsimonioso (RFE-30)
+
 shap_dir <- function(sv, col) {
   v <- sv$X[, col]; s <- sv$S[, col]
   tibble::tibble(Variable = col,

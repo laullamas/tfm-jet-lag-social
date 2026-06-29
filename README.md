@@ -15,7 +15,7 @@ hasta los modelos de aprendizaje automático que predicen el SJL.
 |---|---|---|
 | 0 | [`descarga_entidades.R`](descarga_entidades.R) | Descarga las entidades |
 | 1 | [`preprocesamiento.ipynb`](preprocesamiento.ipynb) | Limpieza, cálculo del SJL y construcción de los conjuntos de datos |
-| 2 | [`construccion_dataset.Rmd`](construccion_dataset.Rmd) | Ensamblado del conjunto de datos de modelado y diccionario de variables |
+| 2 | [`construccion_dataset.Rmd`](construccion_dataset.Rmd) | Depuración estructural del conjunto para análisis y modelado (control de la fuga de información) |
 | 3 | [`analisis_estadistico.Rmd`](analisis_estadistico.Rmd) | Caracterización descriptiva e inferencial del SJL |
 | 4 | [`machine_learning.Rmd`](machine_learning.Rmd) | Regresión y clasificación binaria del SJL |
 

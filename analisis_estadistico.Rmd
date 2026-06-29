@@ -935,7 +935,7 @@ A cada variante le acompaña su versión **con signo** (sin valor absoluto), not
 
 ### Descriptivos por variante
 
-Resumen de las tres variantes del SJL, en magnitud absoluta (Tabla 3) y con signo (Tabla 4). Las columnas `% > 1 h`, `% > 2 h` y `% > 3 h` son proporciones acumulativas que recogen los umbrales habituales: 1 h, descriptor poblacional del fenómeno asociado a peor calidad subjetiva del sueño [1, 2, 4]; 2 h, vinculado a mayor riesgo metabólico y cardiovascular [8, 9, 5]; 3 h, jet lag social severo (~P90 esperado). `% tardío` en la tabla con signo recoge la fracción con MSF posterior a MSW (retraso vespertino los días libres), dirección habitual del fenómeno [1, 4].
+Resumen de las tres variantes del SJL, en magnitud absoluta (Tabla 3) y con signo (Tabla 4). Las columnas `% > 1 h`, `% > 2 h` y `% > 3 h` son proporciones acumulativas que recogen los umbrales habituales: 1 h, descriptor poblacional del fenómeno asociado a peor calidad subjetiva del sueño [1, 2, 4]; 2 h, vinculado a mayor riesgo metabólico y cardiovascular [5, 7, 8]; 3 h, jet lag social severo (~P90 esperado). `% tardío` en la tabla con signo recoge la fracción con MSF posterior a MSW (retraso vespertino los días libres), dirección habitual del fenómeno [1, 4].
 
 ```{r desc_sjl_table}
 resumen_abs <- function(s) {
@@ -1136,7 +1136,7 @@ En el bloque con signo (Figura 3d-f) las tres distribuciones se centran alrededo
 
 A partir de este punto el análisis se centra en el SJL clásico (las variantes sleep-corrected y Jankowski quedan para sensibilidad). Antes de elegir la familia de tests inferenciales se examina su distribución empírica sobre la versión absoluta y la versión con signo, con tres elementos complementarios:
 
-1. **Evidencia visual**, histograma con la curva normal teórica superpuesta y Q-Q plot frente a $N(0,1)$. Es el criterio recomendado en la literatura cuando $n$ es grande [10], porque permite distinguir desviaciones sustanciales de desviaciones triviales que ningún test podría discriminar.
+1. **Evidencia visual**, histograma con la curva normal teórica superpuesta y Q-Q plot frente a $N(0,1)$. Es el criterio recomendado en la literatura cuando $n$ es grande [9], porque permite distinguir desviaciones sustanciales de desviaciones triviales que ningún test podría discriminar.
 2. **Estadísticos de forma**, asimetría (skewness) y exceso de curtosis para cuantificar la distancia respecto a la normal (en la que ambos valen 0).
 3. **Contraste formal**, el test de Shapiro-Wilk, el más potente para detectar desviaciones de la normalidad y aplicable a este tamaño muestral ($n < 5000$). Se reporta para completar el diagnóstico, aunque a $n$ grande rechace casi por construcción.
 
@@ -1236,7 +1236,7 @@ La figura confirma lo que era esperable. El SJL absoluto (Figura 4a-b) muestra u
 
 El SJL con signo (Figura 4c-d) se aproxima visualmente bastante más a una normal: al permitir negativos, la distribución se centra y recupera buena parte de la simetría aparente. La asimetría cae a `r sprintf("%+.2f", skew_sig)` (todavía moderadamente positiva, reflejo de que el `r sprintf("%.1f", pct_tardio_sjl)` % de los sanos presentan retraso vespertino), y aun así conserva un pico más estrecho y colas más pesadas que la normal (exceso de curtosis = `r sprintf("%+.2f", kurt_sig)`); en el Q-Q plot esto se aprecia como un alejamiento sistemático de la diagonal en los extremos (especialmente en la cola superior, donde aparecen los retrasos vespertinos grandes) pese a un ajuste razonable en el centro.
 
-El contraste de Shapiro-Wilk rechaza la normalidad tanto del SJL absoluto (W = `r sprintf("%.3f", sw_abs$statistic)`, p = `r p_abs_sci`) como del SJL con signo (W = `r sprintf("%.3f", sw_sig$statistic)`, p = `r p_sig_sci`). Es un resultado esperable, ya que a este tamaño muestral (n = `r length(x_abs)`) la potencia del contraste es tan elevada que detecta desviaciones triviales sin relevancia práctica y rechaza casi por construcción, de modo que el p-valor por sí solo deja de ser informativo [10]. Por eso la decisión se apoya sobre todo en la inspección visual del Q-Q plot y en los descriptivos de forma (asimetría y curtosis), que muestran una desviación sustancial y no trivial.
+El contraste de Shapiro-Wilk rechaza la normalidad tanto del SJL absoluto (W = `r sprintf("%.3f", sw_abs$statistic)`, p = `r p_abs_sci`) como del SJL con signo (W = `r sprintf("%.3f", sw_sig$statistic)`, p = `r p_sig_sci`). Es un resultado esperable, ya que a este tamaño muestral (n = `r length(x_abs)`) la potencia del contraste es tan elevada que detecta desviaciones triviales sin relevancia práctica y rechaza casi por construcción, de modo que el p-valor por sí solo deja de ser informativo [9]. Por eso la decisión se apoya sobre todo en la inspección visual del Q-Q plot y en los descriptivos de forma (asimetría y curtosis), que muestran una desviación sustancial y no trivial.
 
 ### Implicaciones para los métodos inferenciales
 
@@ -1512,7 +1512,7 @@ La figura resume gráficamente el hallazgo central: en el grupo con SJL < 2 h (p
 
 # 4 · SJL y edad
 
-Algunos estudios describen un descenso aproximadamente lineal del SJL con la edad a partir de la adolescencia tardía [13]. Se examina la relación desde dos perspectivas: continua (regresión lineal + Spearman) y categórica por franjas etarias (Kruskal-Wallis + Dunn-Holm). El análisis se presenta sin ajuste por sexo: la cohorte está equilibrada en sexo (Tabla 2) y la sección 5 mostrará que el sexo no se asocia con el SJL, por lo que la lectura marginal SJL-edad no requiere control demográfico adicional.
+Algunos estudios describen un descenso aproximadamente lineal del SJL con la edad a partir de la adolescencia tardía [10]. Se examina la relación desde dos perspectivas: continua (regresión lineal + Spearman) y categórica por franjas etarias (Kruskal-Wallis + Dunn-Holm). El análisis se presenta sin ajuste por sexo: la cohorte está equilibrada en sexo (Tabla 2) y la sección 5 mostrará que el sexo no se asocia con el SJL, por lo que la lectura marginal SJL-edad no requiere control demográfico adicional.
 
 ## 4.1 Relación continua
 
@@ -1578,7 +1578,7 @@ ggplot(sub_edad, aes(x = edad, y = sjl)) +
   expand_limits(y = 0)
 ```
 
-El SJL desciende de forma aproximadamente lineal con la edad: β = `r sprintf('%+.4f', beta_lin)` h/año (t = `r sprintf('%.2f', t_lin)`, p = `r fmt_p(p_lin)`), unos `r sprintf('%.2f', abs(beta_lin)*60)` minutos menos por año adicional, magnitud coherente con la reportada por Gottlieb et al. [13]. El Spearman ρ = `r sprintf('%+.3f', rho_sp$estimate)` (p = `r fmt_p(rho_sp$p.value)`) confirma la misma asociación monótona y negativa sobre los rangos.
+El SJL desciende de forma aproximadamente lineal con la edad: β = `r sprintf('%+.4f', beta_lin)` h/año (t = `r sprintf('%.2f', t_lin)`, p = `r fmt_p(p_lin)`), unos `r sprintf('%.2f', abs(beta_lin)*60)` minutos menos por año adicional, magnitud coherente con la reportada por Gottlieb et al. [10]. El Spearman ρ = `r sprintf('%+.3f', rho_sp$estimate)` (p = `r fmt_p(rho_sp$p.value)`) confirma la misma asociación monótona y negativa sobre los rangos.
 
 ## 4.2 Categorización por grupos etarios
 
@@ -1678,7 +1678,7 @@ El omnibus de Kruskal-Wallis rechaza la igualdad de SJL entre las seis franjas e
 Tras confirmar en la sección 4 que el SJL desciende con la edad, conviene introducir la edad como covariable al comparar el SJL entre sexos: si la distribución etaria difiriese entre mujeres y hombres, parte del contraste podría atribuirse a la edad y no al sexo. En esta cohorte las edades medias por sexo son muy similares (Tabla 2), así que el ajuste no debería cambiar la conclusión, pero se incluye para limpiar el contraste. Dos pasos:
 
 - **Crudo**: Mann–Whitney U entre grupos y Cliff's δ con IC95% asintótico como tamaño de efecto.
-- **Ajustado por edad**: ANCOVA de rangos de tipo Quade [14], en el que se rankean SJL y edad sobre toda la muestra, se regresa rank(SJL) sobre rank(edad) y se aplican Mann–Whitney y Cliff's δ sobre los residuos de ese ajuste. Es el equivalente no paramétrico al ANCOVA clásico, no asume normalidad y preserva la lógica rank-based del análisis crudo.
+- **Ajustado por edad**: ANCOVA de rangos de tipo Quade [11], en el que se rankean SJL y edad sobre toda la muestra, se regresa rank(SJL) sobre rank(edad) y se aplican Mann–Whitney y Cliff's δ sobre los residuos de ese ajuste. Es el equivalente no paramétrico al ANCOVA clásico, no asume normalidad y preserva la lógica rank-based del análisis crudo.
 
 ```{r sjl_sexo_test}
 sub_sexo <- val_sanos |>
@@ -1809,7 +1809,7 @@ ggplot(sub_plot, aes(x = sexo_lab, y = .data[[PRIMARY]],
   labs(x = "Sexo", y = sprintf("%s (h)", PRIMARY_LBL))
 ```
 
-El contraste crudo no detecta diferencias entre mujeres y hombres (Mann–Whitney U = `r formatC(mw$statistic, format='d')`, p = `r fmt_p(mw$p.value)`); Cliff's δ = `r sprintf('%+.3f', cd_val)` (`r interpreta_cliff(cd_val)`, IC95% [`r sprintf('%+.3f', cd_lo)`, `r sprintf('%+.3f', cd_hi)`]), con un IC que cruza el cero. Las medianas son prácticamente idénticas (`r sprintf('%.2f', med_muj)` h vs `r sprintf('%.2f', med_hom)` h, `r sprintf('%.0f', abs(med_muj - med_hom)*60)` min de diferencia). El ajuste por edad mediante rank-ANCOVA de Quade [14] no cambia el resultado (p = `r fmt_p(mw_adj$p.value)`, δ = `r sprintf('%+.3f', cd_adj_val)` IC95% [`r sprintf('%+.3f', cd_adj_lo)`, `r sprintf('%+.3f', cd_adj_hi)`]). El sexo se incluirá en los análisis multivariables posteriores solo por convención de ajuste demográfico.
+El contraste crudo no detecta diferencias entre mujeres y hombres (Mann–Whitney U = `r formatC(mw$statistic, format='d')`, p = `r fmt_p(mw$p.value)`); Cliff's δ = `r sprintf('%+.3f', cd_val)` (`r interpreta_cliff(cd_val)`, IC95% [`r sprintf('%+.3f', cd_lo)`, `r sprintf('%+.3f', cd_hi)`]), con un IC que cruza el cero. Las medianas son prácticamente idénticas (`r sprintf('%.2f', med_muj)` h vs `r sprintf('%.2f', med_hom)` h, `r sprintf('%.0f', abs(med_muj - med_hom)*60)` min de diferencia). El ajuste por edad mediante rank-ANCOVA de Quade [11] no cambia el resultado (p = `r fmt_p(mw_adj$p.value)`, δ = `r sprintf('%+.3f', cd_adj_val)` IC95% [`r sprintf('%+.3f', cd_adj_lo)`, `r sprintf('%+.3f', cd_adj_hi)`]). El sexo se incluirá en los análisis multivariables posteriores solo por convención de ajuste demográfico.
 
 # 6 · SJL y cronotipo
 
@@ -2017,7 +2017,7 @@ ggsave("outputs/memoria/figuras/fig_sjl_edad.png", fig_edad,
 
 # 7 · SJL e IMC
 
-La relación SJL-IMC es de las más estudiadas y debatidas. El meta-análisis más reciente (43 estudios, n ≈ 231.648) estima una asociación positiva global significativa (r = 0,12, p < 0,001) pero con heterogeneidad muy alta (I² ≈ 95 %) atribuida a la diversidad metodológica: definición del SJL (MCTQ vs actigrafía, variante clásica vs corregida por deuda de sueño vs Jankowski, absoluto vs con signo), rango etario y estrategia de ajuste [15]. Algunos trabajos reportan asociación positiva moderada [2, 9, 5]; la elevada heterogeneidad del meta-análisis [15] refleja precisamente esta disparidad entre estudios individuales.
+La relación SJL-IMC es de las más estudiadas y debatidas. El meta-análisis más reciente (43 estudios, n ≈ 231.648) estima una asociación positiva global significativa (r = 0,12, p < 0,001) pero con heterogeneidad muy alta (I² ≈ 95 %) atribuida a la diversidad metodológica: definición del SJL (MCTQ vs actigrafía, variante clásica vs corregida por deuda de sueño vs Jankowski, absoluto vs con signo), rango etario y estrategia de ajuste [12]. Algunos trabajos reportan asociación positiva moderada [2, 5, 8]; la elevada heterogeneidad del meta-análisis [12] refleja precisamente esta disparidad entre estudios individuales.
 
 El análisis se restringe a sanos adultos (≥ 18 años) por los umbrales OMS del IMC. Los adolescentes quedan excluidos porque necesitarían percentiles específicos para la clasificación de su IMC. Tres bloques abordan la asociación SJL-IMC desde perspectivas complementarias: relación continua (regresión lineal + Spearman, con verificación de robustez ante confusión por edad y sexo mediante Spearman parcial), categorización OMS del IMC (Kruskal-Wallis + ε²) y comparación dicotómica del IMC entre sujetos con SJL clínicamente relevante (≥ 2 h) y el resto (Mann-Whitney + Cliff's δ con IC 95 %).
 
@@ -2221,7 +2221,7 @@ Correlaciones de **Spearman** entre el SJL y las variables circadianas/actigráf
 
 - **Spearman crudo**: asociación bivariada bruta.
 - **Spearman parcial ajustado por edad y sexo** (residualización OLS sobre rangos), **modelo principal**: aísla la asociación específica descontando el efecto demográfico que edad y sexo pudieran tener sobre ambas variables.
-- **Spearman parcial ajustado por edad, sexo y cronotipo** (**análisis de sensibilidad**): añade el cronotipo colapsado a 3 niveles (matutino / indefinido / vespertino, coherente con §7), codificado como K-1 variables indicadoras en la residualización. Como se discute en §0, cronotipo y SJL están entrelazados por construcción (el cronotipo medido vía MSF entra en el cálculo del SJL); por eso no se incluye en el modelo primario y se reserva para evaluar la robustez de la señal: si la asociación de una variable circadiana con el SJL sobrevive al ajuste por cronotipo, aporta información más allá del cronotipo subyacente, apoyado por distintas referencias metodológicas [4, 5].
+- **Spearman parcial ajustado por edad, sexo y cronotipo** (**análisis de sensibilidad**): añade el cronotipo colapsado a 3 niveles (matutino / indefinido / vespertino), codificado como K-1 variables indicadoras en la residualización. Como se discute en §0, cronotipo y SJL están entrelazados por construcción (el cronotipo medido vía MSF entra en el cálculo del SJL); por eso no se incluye en el modelo primario y se reserva para evaluar la robustez de la señal: si la asociación de una variable circadiana con el SJL sobrevive al ajuste por cronotipo, aporta información más allá del cronotipo subyacente, apoyado por distintas referencias metodológicas [4, 5].
 
 Las tres con corrección de **Holm-Bonferroni** sobre la batería completa. Se reportan: (i) **tabla maestra** con los tres `ρ` (ordenada por |ρ parcial edad + sexo|, el modelo principal); (ii) **forest plot** con los tres estimadores superpuestos sobre el mismo eje, cuando los tres puntos coinciden para una variable, la asociación es robusta frente a edad, sexo y cronotipo; si divergen, la separación cuantifica el confounding por cada ajuste; (iii) **matriz de correlación** con las 15 variables de mayor |ρ parcial edad + sexo|.
 
@@ -2284,7 +2284,7 @@ sp_crudo$p_holm_crudo <- p.adjust(sp_crudo$p_crudo, method = "holm")
 
 # Cronotipo colapsado a 3 niveles (M/N/V) para el ajuste de sensibilidad:
 # las extremas tienen n bajo (~ 1.9 % y ~ 8.5 %, §1.2) y como indicadoras
-# introducen inestabilidad sin aportar señal. Coherente con §7.
+# introducen inestabilidad sin aportar señal.
 val_sanos_circ <- val_sanos |>
   mutate(crono3 = factor(colapsar_cronotipo(.data[[CRONO_COL]]),
                           levels = c("N", "M", "V")))
@@ -2845,7 +2845,7 @@ or_cancer_m3 <- get_row(3, "M3 (+ cronotipo)")
 La tabla muestra tres patrones, unidos por un rasgo común: ajustar por la edad no diluye la asociación con el SJL, sino que la refuerza.
 
 - **Patología agregada**: en el modelo crudo la asociación es limítrofe (OR M1 = `r sprintf('%.3f', or_any_m1$or_num)`, IC 95 % [`r sprintf('%.3f', or_any_m1$lo_num)`, `r sprintf('%.3f', or_any_m1$hi_num)`], p = `r fmt_p(or_any_m1$p)`), pero se vuelve significativa al ajustar por edad y sexo (OR M2 = `r sprintf('%.3f', or_any_m2$or_num)`, IC 95 % [`r sprintf('%.3f', or_any_m2$lo_num)`, `r sprintf('%.3f', or_any_m2$hi_num)`], p = `r fmt_p(or_any_m2$p)`) y se refuerza al añadir el cronotipo (OR M3 = `r sprintf('%.3f', or_any_m3$or_num)`, p = `r fmt_p(or_any_m3$p)`). Que el OR crezca con el ajuste en lugar de atenuarse apunta a una confusión negativa por edad: los sujetos de más edad acumulan más patología pero presentan menos SJL, de modo que la edad enmascara la asociación cuando no se controla.
-- **Patología oncológica**: reproduce el mismo patrón con una magnitud comparable, aunque más débil, ya que solo alcanza significación en el modelo plenamente ajustado (OR M3 = `r sprintf('%.3f', or_cancer_m3$or_num)`, IC 95 % [`r sprintf('%.3f', or_cancer_m3$lo_num)`, `r sprintf('%.3f', or_cancer_m3$hi_num)`], p = `r fmt_p(or_cancer_m3$p)`) y queda limítrofe en el crudo (p = `r fmt_p(or_cancer_m1$p)`) y en el demográfico (p = `r fmt_p(or_cancer_m2$p)`). Es coherente con la literatura que vincula la disrupción circadiana crónica con un mayor riesgo oncológico [16].
+- **Patología oncológica**: reproduce el mismo patrón con una magnitud comparable, aunque más débil, ya que solo alcanza significación en el modelo plenamente ajustado (OR M3 = `r sprintf('%.3f', or_cancer_m3$or_num)`, IC 95 % [`r sprintf('%.3f', or_cancer_m3$lo_num)`, `r sprintf('%.3f', or_cancer_m3$hi_num)`], p = `r fmt_p(or_cancer_m3$p)`) y queda limítrofe en el crudo (p = `r fmt_p(or_cancer_m1$p)`) y en el demográfico (p = `r fmt_p(or_cancer_m2$p)`). Es coherente con la literatura que vincula la disrupción circadiana crónica con un mayor riesgo oncológico [13].
 - **Patología del sueño**: es la más débil de las tres y no alcanza significación en ninguno de los modelos (OR de `r sprintf('%.3f', or_sueno_m1$or_num)` en el crudo a `r sprintf('%.3f', or_sueno_m3$or_num)` en el ajustado por cronotipo, con el intervalo de confianza cruzando siempre el 1; p = `r fmt_p(or_sueno_m1$p)`, `r fmt_p(or_sueno_m2$p)` y `r fmt_p(or_sueno_m3$p)` en los tres modelos). El resultado puede parecer contraintuitivo, ya que cabría esperar que el SJL fuese el predictor más natural de la patología del sueño, pero refleja que los grandes diagnósticos clínicos del sueño (insomnio crónico, apnea, síndrome de piernas inquietas) tienen determinantes más potentes que el SJL.
 
 En conjunto, y una vez descontado el efecto de la edad, el SJL se asocia con la presencia de **patología agregada** y, de forma más débil, con la **patología oncológica**, mientras que no se detecta asociación con la patología del sueño diagnosticada. Que el ajuste refuerce los OR en lugar de diluirlos respalda la lectura del SJL como marcador de riesgo de enfermedad general, con la estructura etaria de la cohorte ocultando parte de la señal en la mirada sin ajustar.
@@ -2886,12 +2886,12 @@ diff_v_m <- med_v - med_matutino
 |---|---|---|
 | Mediana SJL (adultos) | `r sprintf('%.2f', med_sjl)` h | 0.5–1.5 h [2] |
 | % ≥ 1 h | `r sprintf('%.1f', pct_1h)` % | ≈ 69 % en la base MCTQ global [2] |
-| Pico edad del SJL/cronotipo | franja `r pico_edad` años | final de la adolescencia, cambio agudo en torno a los 20 años [11] |
-| Recuperación de sueño en libres (Δ SD) | `r sprintf('%+.2f', delta_sd)` h | recuperación parcial en libres, decreciente con la edad [1, 4, 13] |
-| Vespertinos − matutinos | `r sprintf('%+.2f', diff_v_m)` h | mayor SJL en vespertinos [5, 17] |
-| ρ SJL ~ IMC (crudo) | `r sprintf('%+.3f', rho_sp$estimate)` | r = 0.12 (IC 95 % 0.07–0.17, k = 43, n ≈ 231 600) [15] |
+| Pico edad del SJL/cronotipo | franja `r pico_edad` años | final de la adolescencia, cambio agudo en torno a los 20 años [14] |
+| Recuperación de sueño en libres (Δ SD) | `r sprintf('%+.2f', delta_sd)` h | recuperación parcial en libres, decreciente con la edad [1, 4, 10] |
+| Vespertinos − matutinos | `r sprintf('%+.2f', diff_v_m)` h | mayor SJL en vespertinos [5, 15] |
+| ρ SJL ~ IMC (crudo) | `r sprintf('%+.3f', rho_sp$estimate)` | r = 0.12 (IC 95 % 0.07–0.17, k = 43, n ≈ 231 600) [12] |
 
-> **Nota sobre el pico edad**: la franja `r pico_edad` años cae dentro del recorrido de "adolescencia tardía" descrito en [11]; el aparente desplazamiento respecto al pico canónico ~20 años se debe a la **discretización en franjas amplias** (la primera cubre 13-17 años), no a una divergencia real con la literatura.
+> **Nota sobre el pico edad**: la franja `r pico_edad` años cae dentro del recorrido de "adolescencia tardía" descrito en [14]; el aparente desplazamiento respecto al pico canónico ~20 años se debe a la **discretización en franjas amplias** (la primera cubre 13-17 años), no a una divergencia real con la literatura.
 
 ## 10.3 Del análisis inferencial al modelo predictivo
 
@@ -2907,17 +2907,15 @@ El análisis inferencial ha caracterizado el SJL como un fenómeno con asociacio
 4. Roenneberg T, Pilz LK, Zerbini G, Winnebeck EC. Chronotype and social jetlag: a (self-)critical review. *Biology.* 2019;8(3):54.
 5. Wong PM, Hasler BP, Kamarck TW, Muldoon MF, Manuck SB. Social jetlag, chronotype, and cardiometabolic risk. *J Clin Endocrinol Metab.* 2015;100(12):4612-4620.
 6. Jankowski KS. Social jet lag: sleep-corrected formula. *Chronobiol Int.* 2017;34(4):531-535.
-7. Henderson SEM, Brady EM, Robertson N. Associations between social jetlag and mental health in young people: a systematic review. *Chronobiol Int.* 2019;36(10):1316-1333.
-8. Koopman ADM, Rauh SP, van 't Riet E, et al. The association between social jetlag, the metabolic syndrome, and type 2 diabetes mellitus in the general population: the New Hoorn Study. *J Biol Rhythms.* 2017;32(4):359-368.
-9. Parsons MJ, Moffitt TE, Gregory AM, et al. Social jetlag, obesity and metabolic disorder: investigation in a cohort study. *Int J Obes.* 2015;39(5):842-848.
-10. Ghasemi A, Zahediasl S. Normality tests for statistical analysis: a guide for non-statisticians. *Int J Endocrinol Metab.* 2012;10(2):486-489.
-11. Roenneberg T, Kuehnle T, Pramstaller PP, et al. A marker for the end of adolescence. *Curr Biol.* 2004;14(24):R1038-R1039.
-12. Bonmatí-Carrión MÁ, Vicente-Martínez J, Madrid JA, Rol MA. The interplay among sleep patterns, social habits, and environmental cues: insights from the Spanish population. *Front Physiol.* 2024;15:1323127.
-13. Gottlieb E, Gupta S, Gahan L, Raymann RJ, Watson NF. Social jetlag decreases across the lifespan: a prospective big data analysis of objective sleep metrics. *J Sleep Res.* 2025;34(4):e14433.
-14. Quade D. Rank analysis of covariance. *J Am Stat Assoc.* 1967;62(320):1187-1200.
-15. Arab A, Karimi E, Garaulet M, Scheer FAJL. Social jetlag and obesity: a systematic review and meta-analysis. *Obes Rev.* 2024;25(3):e13664.
-16. Masri S, Sassone-Corsi P. The emerging link between cancer, metabolism, and circadian rhythms. *Nat Med.* 2018;24(12):1795-1803.
-17. Levandovski R, Dantas G, Fernandes LC, et al. Depression scores associate with chronotype and social jetlag in a rural population. *Chronobiol Int.* 2011;28(9):771-778.
+7. Koopman ADM, Rauh SP, van 't Riet E, et al. The association between social jetlag, the metabolic syndrome, and type 2 diabetes mellitus in the general population: the New Hoorn Study. *J Biol Rhythms.* 2017;32(4):359-368.
+8. Parsons MJ, Moffitt TE, Gregory AM, et al. Social jetlag, obesity and metabolic disorder: investigation in a cohort study. *Int J Obes.* 2015;39(5):842-848.
+9. Ghasemi A, Zahediasl S. Normality tests for statistical analysis: a guide for non-statisticians. *Int J Endocrinol Metab.* 2012;10(2):486-489.
+10. Gottlieb E, Gupta S, Gahan L, Raymann RJ, Watson NF. Social jetlag decreases across the lifespan: a prospective big data analysis of objective sleep metrics. *J Sleep Res.* 2025;34(4):e14433.
+11. Quade D. Rank analysis of covariance. *J Am Stat Assoc.* 1967;62(320):1187-1200.
+12. Arab A, Karimi E, Garaulet M, Scheer FAJL. Social jetlag and obesity: a systematic review and meta-analysis. *Obes Rev.* 2024;25(3):e13664.
+13. Masri S, Sassone-Corsi P. The emerging link between cancer, metabolism, and circadian rhythms. *Nat Med.* 2018;24(12):1795-1803.
+14. Roenneberg T, Kuehnle T, Pramstaller PP, et al. A marker for the end of adolescence. *Curr Biol.* 2004;14(24):R1038-R1039.
+15. Levandovski R, Dantas G, Fernandes LC, et al. Depression scores associate with chronotype and social jetlag in a rural population. *Chronobiol Int.* 2011;28(9):771-778.
 
 ---
 
