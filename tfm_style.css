@@ -1,0 +1,289 @@
+/* ============================================================
+   TFM · Jet Lag Social — Estilo HTML personalizado
+   Paleta coherente con el documento R Markdown
+   ============================================================ */
+
+:root {
+  --tfm-header: #1a2940;
+  --tfm-header-soft: #2c3e85;
+  --tfm-accent: #b03a2e;
+  --tfm-accent-soft: #d4604f;
+  --tfm-muted: #6c757d;
+  --tfm-bg-soft: #f8f9fb;
+  --tfm-border: #e4e7ec;
+}
+
+/* ------------------- Tipografía base ------------------- */
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               "Helvetica Neue", Arial, sans-serif;
+  color: #2c3e50;
+  line-height: 1.65;
+  font-size: 15px;
+  background-color: #ffffff;
+}
+
+/* Anchura de contenido más legible */
+.main-container {
+  max-width: 1200px;
+}
+
+/* ------------------- Cabeceras ------------------- */
+
+h1.title {
+  color: var(--tfm-header);
+  font-weight: 700;
+  font-size: 2.1em;
+  border-bottom: 4px solid var(--tfm-accent);
+  padding-bottom: 0.4em;
+  margin-bottom: 0.3em;
+}
+
+h1.subtitle {
+  color: var(--tfm-muted);
+  font-weight: 400;
+  font-size: 1.15em;
+  margin-top: 0;
+  margin-bottom: 1.5em;
+}
+
+h4.date {
+  color: var(--tfm-muted);
+  font-size: 0.95em;
+  font-weight: 400;
+  font-style: italic;
+}
+
+h1, h2, h3, h4 {
+  color: var(--tfm-header);
+  font-weight: 600;
+  margin-top: 1.8em;
+  margin-bottom: 0.7em;
+}
+
+h1:not(.title):not(.subtitle) {
+  font-size: 1.75em;
+  border-bottom: 2px solid var(--tfm-header);
+  padding-bottom: 0.3em;
+}
+
+h2 {
+  font-size: 1.4em;
+  border-bottom: 1px solid var(--tfm-border);
+  padding-bottom: 0.25em;
+}
+
+h3 {
+  font-size: 1.15em;
+  color: var(--tfm-header-soft);
+}
+
+h4 {
+  font-size: 1.0em;
+  color: var(--tfm-header-soft);
+}
+
+/* ------------------- TOC flotante ------------------- */
+
+#TOC {
+  background-color: var(--tfm-bg-soft);
+  border: 1px solid var(--tfm-border);
+  border-radius: 6px;
+  padding: 0.5em 0;
+  font-size: 0.88em;
+}
+
+#TOC .tocify-header {
+  margin-bottom: 0;
+}
+
+#TOC .tocify-item {
+  padding: 0.35em 1em;
+  color: #2c3e50;
+  border-left: 3px solid transparent;
+  transition: all 0.15s ease;
+}
+
+#TOC .tocify-item:hover {
+  background-color: #eef2f7;
+  color: var(--tfm-header);
+}
+
+#TOC .tocify-item.active {
+  background-color: var(--tfm-header);
+  color: white;
+  border-left-color: var(--tfm-accent);
+  font-weight: 600;
+}
+
+#TOC .tocify-subheader > .tocify-item {
+  padding-left: 2em;
+  font-size: 0.95em;
+}
+
+#TOC .tocify-subheader .tocify-subheader > .tocify-item {
+  padding-left: 3em;
+  font-size: 0.9em;
+}
+
+/* ------------------- Tablas ------------------- */
+
+table {
+  font-size: 0.9em;
+  margin: 1.5em 0;
+  border-collapse: collapse;
+}
+
+.table {
+  margin-bottom: 1.5em;
+}
+
+table th {
+  vertical-align: middle !important;
+  font-weight: 600 !important;
+  padding: 0.6em 0.8em !important;
+}
+
+table td {
+  padding: 0.5em 0.8em !important;
+  vertical-align: middle;
+}
+
+table caption,
+caption {
+  caption-side: top !important;
+  color: var(--tfm-header);
+  font-weight: 500;
+  font-size: 0.95em;
+  padding-bottom: 0.6em;
+  text-align: left;
+}
+
+.table-striped tbody tr:nth-of-type(odd) {
+  background-color: var(--tfm-bg-soft);
+}
+
+.table-hover tbody tr:hover {
+  background-color: #eef4fb;
+}
+
+/* Borde inferior sutil en filas */
+.table tbody tr {
+  border-bottom: 1px solid #eef2f7;
+}
+
+/* ------------------- Bloques de código ------------------- */
+
+pre {
+  border-left: 3px solid var(--tfm-header-soft);
+  background-color: #fafbfc !important;
+  padding: 1em 1.2em;
+  border-radius: 4px;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+code {
+  font-family: "JetBrains Mono", "SF Mono", Monaco, Consolas, monospace;
+  font-size: 0.88em;
+  color: var(--tfm-accent);
+  background-color: #fdf2f1;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+
+pre code {
+  color: inherit;
+  background-color: transparent;
+  padding: 0;
+}
+
+/* Botones de code folding */
+.btn-default {
+  font-size: 0.78em;
+  padding: 0.15em 0.6em;
+  border-color: var(--tfm-border);
+  color: var(--tfm-muted);
+}
+
+.btn-default:hover {
+  background-color: var(--tfm-header);
+  color: white;
+  border-color: var(--tfm-header);
+}
+
+/* ------------------- Citas y notas ------------------- */
+
+blockquote {
+  border-left: 4px solid var(--tfm-accent);
+  background-color: var(--tfm-bg-soft);
+  padding: 0.8em 1.2em;
+  color: #444;
+  margin: 1.2em 0;
+  font-style: normal;
+}
+
+/* ------------------- Imágenes y figuras ------------------- */
+
+img, .figure img {
+  max-width: 100%;
+  height: auto;
+}
+
+p.caption,
+.figcaption {
+  color: var(--tfm-muted);
+  font-size: 0.88em;
+  font-style: italic;
+  text-align: left;
+  margin-top: 0.5em;
+}
+
+/* ------------------- Separadores ------------------- */
+
+hr {
+  border: none;
+  border-top: 2px dotted var(--tfm-border);
+  margin: 2.5em 0;
+}
+
+/* ------------------- Listas ------------------- */
+
+ul, ol {
+  margin-bottom: 1em;
+}
+
+ul li, ol li {
+  margin-bottom: 0.3em;
+}
+
+/* ------------------- Vínculos ------------------- */
+
+a {
+  color: var(--tfm-header-soft);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--tfm-header-soft);
+}
+
+a:hover {
+  color: var(--tfm-accent);
+  border-bottom-color: var(--tfm-accent);
+}
+
+/* ------------------- Tablas jerárquicas ------------------- */
+
+/* Indentado para niveles categóricos. nowrap evita que etiquetas largas
+   como "vespertino extremo" envuelvan y desalineen la fila completa. */
+.jerarq-nivel {
+  padding-left: 1.5em;
+  color: #555;
+  font-style: italic;
+  white-space: nowrap;
+}
+
+/* Nombre de variable en negrita */
+.jerarq-var {
+  font-weight: 600;
+  color: var(--tfm-header);
+}

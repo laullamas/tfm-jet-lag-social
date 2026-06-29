@@ -1,0 +1,269 @@
+---
+title: "Construcción del dataset para aprendizaje automático"
+subtitle: "TFM · Máster en Bioinformática · Universidad de Murcia · Curso 2025/26"
+date: "`r format(Sys.Date(), paste0('%d de ', c('enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre')[as.integer(format(Sys.Date(), '%m'))], ' de %Y'))`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: show
+    theme:
+      bootswatch: flatly
+      version: 4
+    highlight: tango
+    df_print: paged
+    fig_caption: true
+    self_contained: true
+    css: "tfm_style.css"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+options(scipen = 999, digits = 4)
+```
+
+# Contexto
+
+Este documento construye `df_cohorte_ml.csv`, el conjunto de datos depurado que consumen tanto `analisis_estadistico.Rmd` —en el análisis de correlaciones entre variables circadianas— como `machine_learning.Rmd`. Parte de `df_cohorte_con_sjl.csv`, la cohorte completa que produce `preprocesamiento.ipynb` con todas las columnas del CRD, las derivadas del cálculo del SJL y los metadatos administrativos, y se queda con la variable respuesta `SJL` y un conjunto explícito de predictores legítimos.
+
+El *data leakage* (en español, *fuga de información*) es la contaminación del modelo con información que no debería estar disponible en el momento de predecir, como las variables derivadas de la propia respuesta o cualquier dato del conjunto de prueba que se filtra al de entrenamiento. Infla el rendimiento durante el desarrollo y lo hunde al aplicar el modelo a datos nuevos, porque aprendió a apoyarse en pistas que en uso real no existen. Evitarla guía toda la depuración que sigue.
+
+La depuración se separa deliberadamente en dos etapas según su relación con la fuga de información, y este documento implementa solo la primera:
+
+- **Etapa 1, limpieza estructural.** Eliminación de columnas por su significado (identificadores, metadatos del cómputo, componentes del propio SJL) y de duplicados exactos (la misma variable bajo distinto nombre). Son decisiones que no dependen de qué sujetos acaben en entrenamiento o en prueba.
+
+- **Etapa 2, preprocesado de modelado (en `machine_learning.Rmd`).** El centrado/escala de los predictores, el filtrado de colinealidad a un umbral ordinario (0,9) y la selección de variables (SBF y RFE) dependen de la muestra concreta y se aplican dentro de cada partición de la validación cruzada.
+
+# 0 · Paquetes
+
+```{r libraries}
+library(tidyverse)
+library(caret)
+library(DT)
+```
+
+# 1 · Carga de la cohorte
+
+```{r carga}
+PROCESSED <- "data/processed"
+
+cohorte <- read_csv(
+  file.path(PROCESSED, "df_cohorte_con_sjl.csv"),
+  show_col_types = FALSE
+)
+
+dim(cohorte)
+```
+
+# 2 · Exclusión por significado
+
+No todas las columnas del CSV sirven para predecir el SJL. Unas son trazabilidad administrativa y otras, por construcción matemática, lo "predicen" de forma trivial. La estrategia es de lista negra explícita, no de lista blanca, para que la auditoría del filtrado quede a la vista en el propio código; las categorías se enumeran agrupadas por motivo.
+
+**Identificadores y metadatos administrativos.** Códigos de paciente, expediente, fechas de reclutamiento y de visita, centro, sensor, código de informe, etc. Son trazabilidad administrativa, no señal biológica. `id_paciente` es la única excepción, que no se descarta sino que se conserva como primera columna para promoverla a índice de fila en el modelado.
+
+**Metadatos del cómputo y calidad del registro.** Los conteos de noches por tipo de día (`n_fijo`, `n_flexible`, `n_laborable`, `n_libres_*`, `n_lab_*`…) y los totales del registro describen *cómo se calculó* el SJL, no *qué circunstancias del sujeto lo modulan*. En el mismo grupo entran los indicadores de calidad del registro (`pct_off`, el porcentaje de tiempo con el reloj sin poner, y `n_dias_validos`, el número de días bien registrados), que miden lo fiable que es el registro, no un rasgo del sujeto.
+
+**Variables derivadas del TXT bruto.** La respuesta es el SJL clásico en valor absoluto $SJL = |MSF - MSW|$ (con $MSF$ y $MSW$ los puntos medios del sueño en días libres y laborables). Se descartan las variables que el pipeline calcula a partir del TXT bruto, de las que se reconstruiría la respuesta: la versión con signo (`SJL_signed`), los puntos medios y su corrección (`MSF`, `MSW`, `MSF_sc`), sus componentes globales y por tipo de día (`SO`, `SE`, `SD`, `TST`, `SOW`, `SOF`, `SEW`, `SEF`, `SDW`, `SDF`) y las variantes corregida por deuda de sueño (`SJL_sc`) y de Jankowski (`SJL_J`), con sus versiones con signo (`SJL_sc_signed`, `SJL_J_signed`) y el caso de Jankowski (`SJL_J_caso`). Zhang et al. dejan igualmente fuera de su modelo de SJL el punto medio del sueño corregido (`MSF_sc`) por esa misma circularidad [1].
+
+**Horarios absolutos del sueño.** Los horarios medios de inicio y fin de sueño y de apagado y encendido de luces (`media_horainiciosueno`, `media_horafinsueno`, `media_horalucesapagadas`, `media_horaluzencendida`) son medias globales que no intervienen en el cálculo del SJL, pero se excluyen por prudencia y porque sus eventuales asociaciones con la respuesta no resultan de interés interpretativo.
+
+**Edad redondeada.** `edad_estudio_int` es `edad_estudio` redondeada al año más cercano. Es casi perfectamente colineal con la versión continua, así que conservar ambas solo repartiría de forma arbitraria la importancia entre dos columnas equivalentes; se mantiene la continua.
+
+**Horas en formato texto.** Para cada una de las cuatro ventanas de actigrafía (M5, L10, L5, M10) y cada uno de los seis canales (tap, sleep, light, temperatura, intensidad, tiempomov), el CRD exporta la hora central dos veces: como texto `"HH:MM:SS"` y como decimal. Son 24 columnas de texto, redundantes con su equivalente numérica, de las que se conservan solo las variantes `_decimal`.
+
+**Variables `*_rf`, `*_sa`.** El *Restfulness Index* (`_rf`) es un reescalado de la ventana L5/M5 del canal, ya presente en el dataset, con constantes de calibración pensadas para la realización de informes clínicos y no tanto para su análisis; la *Sincronización Ambiental* (`_sa`) se ancla a una hora de referencia fija (las 2:00), sensible al cambio de hora. Resultan poco interpretables y son difíciles de reproducir fuera del software, y el `_rf` además es redundante con las ventanas que ya se conservan, así que se descartan.
+
+**Columnas dependientes del modelo de aparato.** `Media_MovimientosEnSuenoPorHora` solo existe en los registros del Kronowise® nuevo; su ausencia no es aleatoria sino estructural (depende del hardware), de modo que cualquier imputación introduciría sesgo. Se descarta para mantener un dataset homogéneo.
+
+**Patologías individuales.** El CRD trae ~45 booleanas con cada diagnóstico concreto (`caracteristicas_sujeto.*`), la mayoría extremadamente dispersas (varias con menos de diez casos en toda la cohorte). Aportan dimensionalidad sin información útil y se sustituyen por los resúmenes ya construidos en el preprocesado: `n_patologias`, `es_sano` y los ocho `pat_grupo_*`.
+
+```{r lista-negra}
+admin <- c(
+  "paciente", "expediente_automatico", "fecha_nacimiento", "rama",
+  "fecha_reclutamiento", "centro_reclutamiento", "id_centro_reclutamiento",
+  "visita", "codigo_visita", "fecha_visita", "visita_paciente", "estado",
+  "form", "entity", "codigo", "informe", "inicio", "fin", "CodigoSensor",
+  "Tipo_suenio", "document", "patologias_lista"
+)
+metadatos_calculo <- c(
+  "n_fijo", "n_flexible", "n_regional", "n_local", "n_laborable",
+  "n_libres_amplio", "n_libres_estandar", "n_libres_estricto",
+  "n_lab_amplio", "n_lab_estandar", "n_lab_estricto",
+  "n_dias_registro", "n_noches_lab", "n_noches_libre", "n_noches_descartadas",
+  "pct_off", "n_dias_validos"
+)
+derivadas_txt <- c(
+  "MSW", "MSF", "MSF_sc", "SOW", "SOF", "SEW", "SEF", "SDW", "SDF",
+  "SJL_signed", "SJL_sc", "SJL_sc_signed", "SJL_J", "SJL_J_signed", "SJL_J_caso",
+  "SO", "SE", "SD", "TST"
+)
+# Horarios absolutos del sueño del software
+horarios_sueno <- c(
+  "media_horainiciosueno", "media_horafinsueno",
+  "media_horalucesapagadas", "media_horaluzencendida"
+)
+duplicados_conocidos <- c("edad_estudio_int")
+dependientes_aparato <- c("Media_MovimientosEnSuenoPorHora")
+
+# Validación de existencia: nombres declarados que no están en el CSV. En vez de
+# descartar en silencio (errors = "ignore"), se detiene la ejecución, de modo
+# que si el preprocesado renombra o elimina una columna el desajuste se delata
+# al instante.
+declarados <- c(admin, metadatos_calculo, derivadas_txt, horarios_sueno,
+                duplicados_conocidos, dependientes_aparato)
+faltantes <- setdiff(declarados, names(cohorte))
+if (length(faltantes) > 0) {
+  stop("Nombres declarados ausentes en el CSV: ", paste(faltantes, collapse = ", "))
+}
+
+cohorte_dominio <- cohorte %>%
+  select(
+    -any_of(declarados),
+    -matches("_hora(m5|l10|l5|m10)$"),       # horas en texto
+    -matches("_(rf|sa)$"),                   # índices opacos
+    -starts_with("caracteristicas_sujeto.")  # patologías individuales dispersas
+  ) %>%
+  rename(cronotipo = crono_tipo_etiqueta_cronotipo_label)
+
+dim(cohorte_dominio)
+```
+
+# 3 · Deduplicación estructural (correlación ≈ 1)
+
+Muchas magnitudes están guardadas bajo más de un nombre, repartidas en varios esquemas de nomenclatura: la entidad 522 (con los sufijos `rm`, `rl`, `re`, `rai`, `rat`, `rs`), los nombres cortos de la entidad 523 (`tap_*`, `light_*`, `sleep_*`, `temperatura_*`…) y el bloque de globales `gXX`. Una misma magnitud puede aparecer en dos o en tres de esos esquemas con nombres distintos pero valores idénticos. Con correlación 1,0000, son la misma columna repetida y no variables parecidas.
+
+Se detectan por correlación. Se calcula la matriz de Spearman entre los predictores numéricos y se descarta una de cada par con $|\rho| > 0{,}9999$. El umbral es deliberadamente extremo. A 0,9999 solo caen los duplicados exactos y los artefactos de precisión, de cambio de unidad o de signo (un porcentaje de sueño y su complemento de vigilia, que correlacionan $-1$). No se tocan las variables que covarían de forma fuerte pero no idéntica, porque esa reducción de colinealidad ordinaria se delega a la Etapa 2.
+
+La poda la realiza `caret::findCorrelation`, que de cada par conserva la variable con menor correlación media con el resto del conjunto. Con duplicados exactos ese criterio empata (su correlación con todas las demás columnas es idéntica) y el desempate lo resuelve la posición, ya que ante un empate `findCorrelation` descarta la columna de índice más bajo. Las entidades se unen aguas arriba, en `preprocesamiento.ipynb`, en el orden 522 → 523, de modo que los nombres cortos de la 523 (`light_media`, `sleep_is`…) quedan los últimos de cada grupo y sobreviven. Es un efecto del orden de unión, no una elección del método, pero resulta conveniente, porque esos nombres cortos son la nomenclatura canónica de la batería y la deduplicación deja por defecto las etiquetas más legibles.
+
+Ese reparto por defecto basta casi siempre, pero en unos pocos grupos la columna que sobrevive no es la más conveniente. Para ellos se fija el superviviente de forma explícita con el vector `preferidas`. Sus columnas equivalentes ($|\rho| > 0{,}9999$) se identifican en la propia matriz de correlación —sin mantener a mano una lista de correspondencias— y se descartan antes de pasar el resto por `findCorrelation`, de modo que la preferida ya no tiene par y queda protegida.
+
+Se fijan dos columnas por precisión: las duraciones de sueño `media_tiempototalsueno` y `media_tiemporealsueno`, que están en minutos con decimales frente a sus equivalentes redondeadas a entero o expresadas en horas.
+
+```{r dedup}
+# Predictores numéricos para la matriz de correlación. Se excluyen el identificador
+# y la respuesta, y se descartan las columnas de varianza cero, cuya correlación
+# es indefinida (metería NA en la matriz y rompería findCorrelation).
+num <- cohorte_dominio %>%
+  select(where(is.numeric), -id_paciente, -SJL)
+varianzas <- vapply(num, var, numeric(1), na.rm = TRUE)
+num <- num[, !is.na(varianzas) & varianzas > 0]
+
+# findCorrelation no opera sobre los datos crudos, sino sobre una matriz de
+# correlación ya calculada.
+M <- cor(num, method = "spearman", use = "pairwise.complete.obs")
+
+# Superviviente preferido por grupo de duplicados.
+preferidas <- intersect(
+  c("media_tiempototalsueno", "media_tiemporealsueno"),
+  colnames(M))
+equivalentes <- unique(unlist(lapply(preferidas, function(p)
+  setdiff(names(which(abs(M[p, ]) > 0.9999)), p))))
+
+resto <- setdiff(colnames(M), equivalentes)
+duplicadas <- union(
+  equivalentes,
+  findCorrelation(M[resto, resto], cutoff = 0.9999, names = TRUE)
+)
+
+cohorte_ml <- cohorte_dominio %>% select(-all_of(duplicadas))
+
+# Auditoría
+retenidas <- setdiff(colnames(M), duplicadas)
+representante <- vapply(duplicadas,
+                        function(e) retenidas[which.max(abs(M[e, retenidas]))],
+                        character(1))
+auditoria_dup <- tibble(retenida = representante, eliminada = duplicadas) %>%
+  arrange(retenida, eliminada) %>%
+  group_by(retenida) %>%
+  summarise(n_eliminadas = n(),
+            eliminadas = paste(eliminada, collapse = "; "),
+            .groups = "drop")
+
+cat(nrow(auditoria_dup), "columnas retenidas absorben",
+    sum(auditoria_dup$n_eliminadas), "eliminadas.\n")
+
+DT::datatable(
+  auditoria_dup,
+  rownames = FALSE,
+  colnames = c("Columna retenida", "n", "Columnas eliminadas (|ρ| > 0,9999)"),
+  options = list(pageLength = 10)
+)
+```
+
+# 4 · Estructura final del dataset
+
+Se genera `df_cohorte_ml.csv` con el SJL absoluto como respuesta. `id_paciente` se mantiene como primera columna (`machine_learning.Rmd` la promueve a nombre de fila al cargar el CSV, de modo que no entra como predictor pero permite localizar cualquier sujeto) y la respuesta se sitúa como última columna por convención, para separar predictores y respuesta sin depender del nombre. En esta etapa solo se filtran columnas, nunca filas: el conjunto conserva las 3190 observaciones de la cohorte completa. La restricción a sujetos sanos y el descarte de los registros con datos incompletos se aplican después, ya en `machine_learning.Rmd`.
+
+```{r estructura}
+# id_paciente como primera columna y la respuesta como última.
+cohorte_ml <- cohorte_ml %>%
+  relocate(id_paciente) %>%
+  relocate(SJL, .after = last_col())
+
+# Dimensiones finales. El conteo de predictores descuenta id_paciente y SJL.
+cat(nrow(cohorte_ml), "filas y", ncol(cohorte_ml) - 2,
+    "predictores (más id_paciente y SJL).\n")
+
+# Composición por tipo de columna.
+tibble(
+  tipo = c("numéricas", "lógicas", "categóricas"),
+  n = c(
+    sum(vapply(cohorte_ml, is.numeric, logical(1))),
+    sum(vapply(cohorte_ml, is.logical, logical(1))),
+    sum(vapply(cohorte_ml, is.character, logical(1)))
+  )
+)
+```
+
+# 5 · Persistencia y resumen del filtrado
+
+Se guarda el resultado y se resume el filtrado para que sea reproducible y auditable, con el recuento de cuántas columnas elimina cada categoría. Se guarda también `auditoria_duplicadas.csv` con la correspondencia retenida y las equivalentes eliminadas de la deduplicación.
+
+```{r escritura}
+ruta_ml <- file.path(PROCESSED, "df_cohorte_ml.csv")
+ruta_auditoria <- file.path(PROCESSED, "auditoria_duplicadas.csv")
+write_csv(cohorte_ml, ruta_ml)
+write_csv(auditoria_dup, ruta_auditoria)
+
+resumen <- tibble::tribble(
+  ~Categoría,                                           ~Columnas,
+  "Identificadores y metadatos administrativos",        length(intersect(admin, names(cohorte))),
+  "Metadatos del cómputo y calidad del registro",       length(intersect(metadatos_calculo, names(cohorte))),
+  "Variables derivadas del TXT bruto",                  length(intersect(derivadas_txt, names(cohorte))),
+  "Horarios absolutos del sueño",                       length(intersect(horarios_sueno, names(cohorte))),
+  "Edad redondeada (edad_estudio_int)",                 length(intersect(duplicados_conocidos, names(cohorte))),
+  "Horas en formato texto",                             sum(grepl("_hora(m5|l10|l5|m10)$", names(cohorte))),
+  "Variables opacas (*_rf, *_sa)",                      sum(grepl("_(rf|sa)$", names(cohorte))),
+  "Dependientes del modelo de aparato",                 length(intersect(dependientes_aparato, names(cohorte))),
+  "Patologías individuales (caracteristicas_sujeto.*)", sum(startsWith(names(cohorte), "caracteristicas_sujeto.")),
+  "Duplicados estructurales (|ρ| > 0,9999)",            length(duplicadas)
+)
+
+resumen
+```
+
+## Predictores conservados
+
+Tras el filtrado, el dataset retiene su respuesta (`SJL`) y el conjunto de predictores con sentido biológico: las demográficas (`sexo`, `edad_estudio`, `imc`, `peso_kg`, `altura_cm`), el cronotipo, la batería estándar de actigrafía no paramétrica por canal (ventanas M5/L10/L5/M10 en decimal, IS, IV, RA, RAN, CFI, CHS, P1P12), los indicadores de salud circadiana (`indicador*`), los porcentajes de luz y de actividad motora, el panel de sueño del software (`media_*`: periodo, sueño real y total, latencia, eficiencia, WASO, despertares, siestas y exposición a luz, temperatura y actividad durante el sueño) y los resúmenes de patología (`n_patologias`, `es_sano`, `pat_grupo_*`).
+
+# Referencias
+
+1. Zhang Z, Cajochen C, Khatami R. Social jetlag and chronotypes in the Chinese population: analysis of data recorded by wearable devices. J Med Internet Res. 2019;21(6):e13482.
+
+---
+
+## Entorno de ejecución
+
+Versiones de R y de los paquetes con las que se generó este conjunto de datos, para reproducibilidad exacta.
+
+```{r session-info}
+sessionInfo()
+```

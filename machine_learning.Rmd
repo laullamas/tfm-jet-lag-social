@@ -1,0 +1,2779 @@
+---
+title: "Predicción del Jet Lag Social mediante aprendizaje automático"
+subtitle: "TFM · Máster en Bioinformática · Universidad de Murcia · Curso 2025/26"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: show
+    theme:
+      bootswatch: flatly
+      version: 4
+    highlight: tango
+    df_print: paged
+    fig_caption: true
+    self_contained: true
+    css: "tfm_style.css"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5,
+  dpi = 300,
+  dev = "ragg_png",
+  fig.path = "outputs/ml/figures/",
+  cache = FALSE
+)
+options(scipen = 999, digits = 4)
+```
+
+# Contexto
+
+Este documento aplica un flujo de aprendizaje automático a la predicción del Jet Lag Social (SJL) [1] a partir de variables de actigrafía, sobre la cohorte depurada `df_cohorte_ml.csv` que produce `construccion_dataset.Rmd`. El SJL se modela en dos formulaciones complementarias, como variable continua (regresión) y, dicotomizado en el umbral clínico de 2 h, como problema de clasificación.
+
+### Objetivos
+
+El SJL se puede considerar un fenómeno graduado, de tipo dosis-respuesta. La pregunta de fondo de este capítulo es hasta qué punto resulta predecible a partir del comportamiento y el ritmo actigráfico, qué marcadores lo predicen de forma genuina sin circularidad con la respuesta, y dónde se sitúa el techo de esa predicción. Por eso se abordan dos preguntas predictivas complementarias sobre el mismo conjunto de datos, con la regresión como análisis principal:
+
+1. **Regresión (principal).** ¿Cuál es el valor esperado del SJL de un sujeto a partir de sus características demográficas, conductuales y actigráficas? Modelar el SJL como respuesta continua respeta su naturaleza graduada y maximiza la potencia.
+2. **Clasificación binaria.** ¿Qué sujetos están en riesgo de SJL alto (≥ 2 h)? El umbral de 2 h es el corte clínicamente relevante en la literatura [2]; dicotomizar acerca el resultado a una decisión clínica.
+
+### Estructura
+
+0. **Configuración** — paquetes, paleta y tema gráfico, helpers y carga de datos.
+1. **Exploración del conjunto de datos** — depuración de valores faltantes, distribución del SJL y su binarización clínica, y análisis de componentes principales (PCA) del espacio de predictores.
+2. **Partición** — *hold-out* 80/20 estratificado por cuartiles del SJL, común a las dos tareas.
+3. **Modelos de regresión** — Random Forest, SVM radial, Elastic Net y XGBoost; ajuste, comparación en validación cruzada y evaluación en el test.
+4. **Modelos de clasificación binaria** — los mismos algoritmos para el riesgo de SJL ≥ 2 h, con métricas robustas al desbalance.
+5. **Importancia de variables** — importancia en las dos tareas, valores SHAP en la regresión, variables comunes y robustez frente a la circularidad con la respuesta (Set B).
+6. **Selección de variables** — filtro (SBF) y *wrapper* (RFE), rendimiento del modelo reducido y variables del modelo parsimonioso.
+7. **Síntesis y conclusiones** — hallazgos principales, lectura conjunta de las dos tareas, limitaciones y vías de futuro.
+8. **Referencias**.
+
+### Reproducibilidad
+
+Se fija una semilla global `set.seed(0)` al inicio, el mismo valor que en `analisis_estadistico.Rmd`. Como el entrenamiento corre en paralelo y cada *worker* arranca con su propio generador aleatorio, la reproducibilidad exige además fijar la semilla de cada remuestreo. En `caret::train()` y `caret::rfe()` esto se logra con el argumento `seeds` de sus controles (`trainControl` y `rfeControl`), que asigna una semilla por *fold* con independencia del número de núcleos. El filtro `caret::sbf()` es la excepción, ya que en `caret` 7.0-1 ese argumento provoca un error al ejecutarse en paralelo (`supplied seed is not a valid integer`); por eso su reproducibilidad se consigue sembrando de forma determinista los flujos aleatorios de los *workers* con `parallel::clusterSetRNGStream(cl, iseed = 0)` antes de invocarlo, en un clúster propio para no alterar el generador del resto del capítulo. Los modelos costosos se cachean en disco con `saveRDS()`/`readRDS()` en `outputs/ml/models/`, y los chunks que los entrenan están marcados con `eval = FALSE`; el documento los carga desde el `.rds` con el helper `leer_cache()`. Para regenerar un modelo desde cero hay que poner su chunk en `eval = TRUE` y borrar el `.rds` correspondiente. Las versiones de los paquetes forman parte del entorno reproducible. En particular, `xgboost` se fija en 1.7.8.1, porque `caret` 7.0-1 es incompatible con `xgboost` ≥ 2.1. El detalle completo de versiones se imprime con `sessionInfo()` al final del capítulo.
+
+---
+
+# 0 · Configuración
+
+## 0.1 Paquetes
+
+```{r libraries}
+# Manipulación de datos y gráficos
+library(tidyverse) # dplyr, tidyr, readr, ggplot2, purrr
+library(patchwork) # composición multi-panel de ggplots
+
+# Machine Learning
+library(caret) # framework unificado de entrenamiento y CV
+library(ranger) # implementación rápida de Random Forest
+library(randomForest) # evaluador del wrapper RFE en la selección de variables
+library(kernlab) # backend de SVM (svmRadial, sigest)
+library(glmnet) # Elastic Net y logística regularizada
+library(xgboost) # gradient boosting (XGBoost)
+library(MLmetrics) # métricas extendidas (Macro F1, etc.)
+library(pROC) # curvas ROC, AUC y test de DeLong (evaluación en test)
+library(doParallel) # paralelización del entrenamiento
+library(shapviz) # TreeSHAP y visualización de los valores SHAP (beeswarm)
+
+# Análisis exploratorio multivariante (PCA)
+library(inflection) # detección automática del codo (uik / Kneedle) en el scree
+library(psych) # idoneidad del PCA: KMO (Kaiser-Meyer-Olkin)
+library(nFactors) # nº de componentes: análisis paralelo (parallel) y nScree
+library(ppcor) # correlación parcial de Spearman (pcor.test)
+library(effectsize) # tamaño del efecto: Cliff's δ
+
+# Tablas
+library(kableExtra)
+library(knitr)
+
+# Defensa frente a enmascaramientos: MASS::select, kernlab::filter y stats::filter
+# pueden tapar los homónimos de dplyr según el orden de carga.
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+## 0.2 Paleta, helpers visuales y tema `ggplot2`
+
+```{r paleta-tema}
+HEADER <- "#1a2940"
+ACCENT <- "#b03a2e"
+REF <- "#555555"
+
+# Paletas auxiliares específicas del ML
+PAL_QUAL <- c("#1a2940", "#b03a2e", "#1f8a70", "#c46f1f", "#6B21A8")
+PAL_SEQ <- c("#EFF6FF", "#93C5FD", "#3B82F6", "#1E40AF", "#1E3A8A")
+
+# Tema base de ggplot replicado del Rmd estadístico
+theme_tfm <- function(base_size = 13) {
+  theme_minimal(base_size = base_size, base_family = "Arial") +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = "grey90", linetype = "dotted"),
+      panel.background = element_blank(),
+      axis.line = element_line(color = "grey40", linewidth = 0.3),
+      axis.title = element_text(color = HEADER, size = base_size),
+      axis.title.x = element_text(color = HEADER, size = base_size),
+      axis.title.y = element_text(color = HEADER, size = base_size),
+      axis.text = element_text(color = "grey20", size = base_size - 1),
+      plot.title = element_text(color = HEADER, face = "bold", size = base_size + 2),
+      plot.subtitle = element_text(color = "grey30", size = base_size),
+      plot.caption = element_text(color = "grey40", size = base_size - 1),
+      legend.background = element_blank(),
+      legend.key = element_blank(),
+      legend.text = element_text(color = "grey20", size = base_size - 1),
+      legend.title = element_text(color = HEADER, size = base_size),
+      strip.background = element_rect(fill = "grey95", color = NA),
+      strip.text = element_text(color = HEADER, face = "bold", size = base_size)
+    )
+}
+theme_set(theme_tfm())
+```
+
+## 0.3 Helpers de formato
+
+```{r helpers-formato}
+# Estilo de tablas
+TABLES_DIR <- "outputs/ml/tables"
+dir.create(TABLES_DIR, recursive = TRUE, showWarnings = FALSE)
+.n_tabla <- 0L
+
+# Vuelca el contenido de una tabla a outputs/.../tables/
+guardar_tabla <- function(tbl, caption = NULL) {
+  .n_tabla <<- .n_tabla + 1L
+  slug <- if (!is.null(caption)) {
+    s <- tolower(gsub("[^A-Za-z0-9]+", "_", gsub("<[^>]+>", "", caption)))
+    substr(gsub("^_+|_+$", "", s), 1, 60)
+  } else "tabla"
+  base <- file.path(TABLES_DIR, sprintf("%02d_%s", .n_tabla, slug))
+  try(write.csv(as.data.frame(tbl), paste0(base, ".csv"),
+                row.names = FALSE, fileEncoding = "UTF-8"), silent = TRUE)
+  try(writeLines(as.character(kbl(tbl, format = "latex", booktabs = TRUE,
+                                  caption = caption)),
+                 paste0(base, ".tex")), silent = TRUE)
+}
+
+estilo_kable <- function(tbl, caption = NULL) {
+  guardar_tabla(tbl, caption)
+  kbl(tbl, caption = caption, escape = FALSE) |>
+    kable_styling(
+      bootstrap_options = c("striped", "hover", "condensed"),
+      full_width = TRUE,
+      position = "center",
+      font_size = 13
+    ) |>
+    row_spec(0, background = HEADER, color = "white", bold = TRUE)
+}
+
+# Valor exacto del p-valor, con notación científica para p < 1e-4
+fmt_p <- function(p, dec = 3) {
+  umbral <- 10 ^ (-dec)
+  dplyr::case_when(
+    is.na(p) ~ "–",
+    p < umbral ~ paste0("< ", formatC(umbral, format = "f", digits = dec)),
+    TRUE ~ formatC(p, format = "f", digits = dec)
+  )
+}
+
+# Cuenta de NAs por columna con porcentaje
+contar_na <- function(df) {
+  tibble::tibble(
+    Variable = names(df),
+    NAs = colSums(is.na(df)),
+    `% NAs` = round(100 * colSums(is.na(df)) / nrow(df), 2)
+  ) |>
+    arrange(desc(NAs))
+}
+
+# Etiquetas cortas para las figuras y tablas de importancia. Los 12 indicadores
+# derivados de la actigrafía (sueño, luz y actividad) tienen nombres muy largos,
+# así que se cambian a una frase legible; además se quita el sufijo TRUE de las
+# lógicas.
+acortar_var <- function(x) {
+  # Indicadores booleanos de higiene circadiana (nombre propio).
+  glosa_ind <- c(
+    issueno1 = "Duerme 7-9 h", issueno2 = "Siesta <30 min",
+    issueno3 = "Despierta a la misma hora", issueno4 = "Sueño 22-10 h",
+    isluz1 = "Duerme a oscuras", isluz2 = "≥7 h oscuridad/noche",
+    isluz3 = "≥2 h luz natural", isluz4 = "Oscuridad 22-10 h",
+    isactividad1 = "<10 h sedentario", isactividad2 = "Reposo ≥2 h antes de dormir",
+    isactividad3 = "≥30 min ejercicio/día", isactividad4 = "Ejercicio intenso 8-20 h")
+  # Variables de calidad de sueño (resumen 522, prefijo media_) con nombre propio.
+  glosa_media <- c(
+    media_waso = "WASO", media_eficienciadelsueno = "Eficiencia del sueño",
+    media_tiemporealsueno = "Sueño efectivo", media_tiempototalsueno = "Tiempo total de sueño",
+    media_periodosueno = "Periodo de sueño", media_tiempototalcama = "Tiempo total en cama",
+    media_latenciasueno = "Latencia del sueño", media_despertareshora = "Despertares por hora",
+    media_duracionsiestas = "Duración de siestas",
+    media_tiempoactividadensueno = "Tiempo activo en sueño",
+    media_actividadensueno = "Actividad en sueño",
+    media_tiempototalenmovimiento = "Tiempo total en movimiento",
+    media_temperaturaensueno = "Temperatura en sueño",
+    media_luzensueno = "Luz en sueño", media_luzazulensueno = "Luz azul en sueño",
+    media_temperatura2hantessueno = "Temperatura 2 h antes del sueño",
+    media_temperatura2htrassueno = "Temperatura 2 h tras sueño",
+    media_actividad2hantessueno = "Actividad 2 h antes del sueño",
+    media_actividad2htrassueno = "Actividad 2 h tras sueño",
+    media_luz2hantessueno = "Luz 2 h antes del sueño",
+    media_luz2htrassueno = "Luz 2 h tras sueño",
+    media_luzazul2hantessueno = "Luz azul 2 h antes del sueño",
+    media_luzazul2htrassueno = "Luz azul 2 h tras sueño")
+  # Demográficas con nombre propio.
+  glosa_demo <- c(edad_estudio = "Edad", imc = "IMC")
+  # Canales no paramétricos (523) y marcadores, para componer la etiqueta.
+  canal <- c(sleep = "sueño", light = "luz", intensidad = "intensidad",
+             tiempomov = "tiempo movimiento", temperatura = "temperatura", tap = "TAP")
+  marc_hora <- c(horal5decimal = "hora L5", horal10decimal = "hora L10",
+                 horam5decimal = "hora M5", horam10decimal = "hora M10")
+  marc_valor <- c(valorl5 = "L5", valorl10 = "L10", valorm5 = "M5", valorm10 = "M10")
+  marc_idx <- c(is = "IS", iv = "IV", ra = "RA", ran = "NRA", cfi = "CFI",
+                chs = "CHS", p1p12 = "CI", sa = "ES", rf = "RF")
+  marc_stat <- c(media = "media", sd = "SD")
+
+  cap1 <- function(s) sub("^(.)", "\\U\\1", s, perl = TRUE)
+  traducir1 <- function(v) {
+    v0 <- sub("TRUE$", "", v)
+    for (cod in names(glosa_ind))
+      if (grepl(cod, v0, fixed = TRUE)) return(unname(glosa_ind[cod]))
+    if (v0 %in% names(glosa_media)) return(unname(glosa_media[v0]))
+    if (v0 %in% names(glosa_demo)) return(unname(glosa_demo[v0]))
+    if (grepl("^robustez_circadiana", v0)) return("Robustez circadiana")
+    pieza <- regmatches(v0, regexec("^([a-z]+)_(.+)$", v0))[[1]]
+    if (length(pieza) == 3 && pieza[2] %in% names(canal)) {
+      ch <- unname(canal[pieza[2]]); suf <- pieza[3]
+      if (suf %in% names(marc_hora))  return(sprintf("%s %s", cap1(ch), unname(marc_hora[suf])))
+      if (suf %in% names(marc_valor)) return(sprintf("%s %s", cap1(ch), unname(marc_valor[suf])))
+      if (suf %in% names(marc_idx))   return(sprintf("%s %s", cap1(ch), unname(marc_idx[suf])))
+      if (suf %in% names(marc_stat))  return(sprintf("%s %s", cap1(ch), unname(marc_stat[suf])))
+    }
+    v0
+  }
+  vapply(x, traducir1, character(1), USE.NAMES = FALSE)
+}
+
+# Tamaño del efecto Cliff's δ
+pluck_cliff <- function(res) {
+  col <- if ("Cliffs_Delta" %in% names(res)) "Cliffs_Delta" else "r_rank_biserial"
+  as.numeric(res[[col]])
+}
+
+interpreta_cliff <- function(d) {
+  d <- as.numeric(d)
+  ad <- abs(d)
+  dplyr::case_when(
+    is.na(d) ~ "—",
+    ad < 0.147 ~ "negligible",
+    ad < 0.33 ~ "pequeño",
+    ad < 0.474 ~ "mediano",
+    TRUE ~ "grande"
+  )
+}
+
+# Correlación parcial de Spearman:
+# envuelve ppcor::pcor.test en lugar de calcularla a mano. Devuelve la ρ parcial
+# entre x e y descontando las covariables de 'controls'.
+partial_spearman <- function(data, x, y, controls) {
+  # Solo las columnas necesarias y sin NAs (ppcor no los gestiona).
+  d <- data |>
+    select(all_of(c(x, y, controls))) |>
+    drop_na() |>
+    mutate(across(where(is.character), as.factor))
+  if (nrow(d) < length(controls) + 5) {
+    return(tibble(rho_partial = NA_real_, p = NA_real_, n = nrow(d)))
+  }
+  # Expansión de factores a K-1 indicadoras (model.matrix); las continuas pasan
+  # tal cual. Necesario porque ppcor::pcor.test exige todo numérico.
+  rhs <- paste(sprintf("`%s`", controls), collapse = " + ")
+  Z <- model.matrix(as.formula(paste("~", rhs)), data = d)[, -1, drop = FALSE]
+  ct <- ppcor::pcor.test(d[[x]], d[[y]],
+                          as.data.frame(Z), method = "spearman")
+  tibble(rho_partial = ct$estimate, p = ct$p.value, n = ct$n)
+}
+
+# Banda gris para las cabeceras de grupo (pack_rows) al agrupar filas por componente.
+banda <- sprintf("background-color: #e9edf2; color: %s; font-weight: 700;", HEADER)
+```
+
+## 0.4 Reproducibilidad y paralelización
+
+```{r reprod}
+# Semilla global. Se replica antes de cada train()/rfe()/sbf() porque la
+# paralelización con doParallel hace que cada worker tenga su propio RNG
+set.seed(0)
+
+# Directorio donde se persisten modelos entrenados, PCA y otros artefactos ML.
+MODELS_DIR <- "outputs/ml/models"
+if (!dir.exists(MODELS_DIR)) dir.create(MODELS_DIR, recursive = TRUE)
+
+# Carga una caché .rds; si no existe, error claro recordando qué chunk de
+# entrenamiento ejecutar con eval = TRUE
+leer_cache <- function(nombre, chunk) {
+  ruta <- file.path(MODELS_DIR, paste0(nombre, ".rds"))
+  if (!file.exists(ruta))
+    stop(sprintf("Ejecuta el chunk '%s' con eval = TRUE para generar '%s.rds'.",
+                 chunk, nombre))
+  readRDS(ruta)
+}
+
+# Número de núcleos para paralelización.
+# Se reserva 1 núcleo para el sistema.
+N_CORES <- max(2, parallel::detectCores() - 1)
+```
+
+## 0.5 Carga del conjunto de datos
+
+El CSV `df_cohorte_ml.csv` se construye en `construccion_dataset.Rmd`, donde se realiza toda la limpieza estructural y las decisiones para evitar la fuga de información: exclusión de identificadores y metadatos, de los componentes algebraicos del SJL ($MSF$, $MSW$, $SO$, $SE$, $SD$…) y de los horarios absolutos del sueño, más la deduplicación de columnas equivalentes (allí se documentan y justifican). El resultado tiene `id_paciente` como índice de fila, la respuesta `SJL` como última columna y 161 predictores con sentido biológico (demográficos, cronotipo, hábitos, métricas actigráficas no paramétricas, resúmenes patológicos).
+
+**Cohorte de modelado: sólo sujetos sanos** (`es_sano == TRUE`, n = 2693 de 3190). El análisis se restringe a sanos para que la pregunta sea qué factores conductuales y cronobiológicos predicen el SJL en población general, sin que la patología actúe como confounder. Esta decisión es coherente con el `analisis_estadistico.Rmd`, que en los capítulos centrales sobre SJL (3 y 7) trabaja sobre `val_sanos`. Los 497 sujetos con patología registrada se reservan fuera del modelado.
+
+Sobre esa submuestra sana se aplica una última limpieza de predictores con dos criterios separados:
+
+- A las variables **numéricas y factores** se les aplica `caret::nearZeroVar` con sus valores por defecto (`freqCut = 95/5`, `uniqueCut = 10%`). Esto captura `n_patologias` (constante en sanos) y cualquier continua con varianza prácticamente nula.
+- A las variables **lógicas** se les exige únicamente no ser constantes, es decir, tener al menos dos valores distintos. Esto descarta `es_sano` y los `pat_grupo_*` (todos `FALSE` en sanos) pero conserva indicadores con prevalencia baja pero no nula.
+
+La separación es deliberada, pues `nearZeroVar` con `freqCut = 95/5` eliminaría indicadores con prevalencia baja pero no nula que el análisis estadístico ya demostró asociados al SJL (por ejemplo, el indicador "duerme entre 7 y 9 h", con 4.7 % de TRUE en sanos pero Cliff's δ mediano contra el SJL).
+
+```{r carga-datos}
+# Lectura del CSV con id_paciente como índice de fila.
+ruta_csv <- "data/processed/df_cohorte_ml.csv"
+df_ml <- read.csv(ruta_csv, row.names = "id_paciente", check.names = FALSE)
+
+# Cast de las columnas que deben ser factor / lógico.
+df_ml <- df_ml |>
+  mutate(
+    sexo = factor(sexo, levels = c("F", "M")),
+    across(c(starts_with("indicador"), starts_with("pat_grupo_"), es_sano), as.logical)
+  ) |>
+  # El cronotipo (factor) se excluye del modelado: es un troceado en cinco niveles de
+  # la hora de reposo del TAP (tap_horal5decimal), que ya entra como predictor continuo
+  # y que el árbol aprovecha con más resolución que una etiqueta categórica.
+  select(-any_of("cronotipo"))
+
+# Restricción a sujetos sanos.
+n_total <- nrow(df_ml)
+df_ml <- df_ml[df_ml$es_sano, ]
+
+# Predictores: todas las columnas menos la respuesta SJL.
+predictores <- df_ml |> select(-SJL)
+
+# nearZeroVar se aplica a numéricas Y factores.
+# Las lógicas se tratan aparte con un criterio más laxo.
+cols_no_logicas <- predictores |> select(-where(is.logical)) |> names()
+vars_nzv_numfac <- caret::nearZeroVar(predictores[, cols_no_logicas], names = TRUE)
+
+vars_nzv_bool <- predictores |>
+  select(where(is.logical)) |>
+  select(where(~ length(unique(.x)) <= 1)) |>
+  names()
+
+vars_nzv <- c(vars_nzv_numfac, vars_nzv_bool)
+
+if (length(vars_nzv) > 0) {
+  df_ml <- df_ml[, setdiff(names(df_ml), vars_nzv)]
+}
+
+```
+
+```{r carga-resumen}
+resumen_carga <- tibble::tribble(
+  ~Métrica, ~Valor,
+  "Cohorte original (CSV)",
+    sprintf("%d sujetos", n_total),
+  "Cohorte sana (es_sano = TRUE)",
+    sprintf("%d sujetos (%.1f %% del CSV)", nrow(df_ml), 100 * nrow(df_ml) / n_total),
+  "Variables numéricas/factor eliminadas por nearZeroVar",
+    if (length(vars_nzv_numfac) > 0)
+      sprintf("%d (%s)", length(vars_nzv_numfac), paste(vars_nzv_numfac, collapse = ", "))
+    else "0",
+  "Variables lógicas constantes eliminadas",
+    if (length(vars_nzv_bool) > 0)
+      sprintf("%d (%s)", length(vars_nzv_bool), paste(vars_nzv_bool, collapse = ", "))
+    else "0",
+  "Predictores tras nearZeroVar",
+    sprintf("%d (+ respuesta SJL)", ncol(df_ml) - 1),
+  "Identificadores de sujeto únicos",
+    ifelse(length(unique(rownames(df_ml))) == nrow(df_ml), "Sí", "NO")
+)
+estilo_kable(resumen_carga,
+             caption = "Tabla 1 · Resumen de la carga y el filtrado estructural.")
+```
+
+### Interpretación de los predictores eliminados
+
+El cribado por varianza de esta sección descarta columnas por dos motivos cualitativamente distintos, que conviene separar:
+
+- **Constantes por la restricción a sanos.** `n_patologias` (siempre 0 en sanos), `es_sano` (siempre `TRUE`) y los ocho `pat_grupo_*` (siempre `FALSE`) pierden toda variabilidad al quedarnos solo con sujetos sanos.
+
+- **Efecto suelo estructural en `sleep_valorl5`.** Este valor representa la media de las 5 horas de *menos* sueño, que caen en pleno día. El resultado es un efecto suelo: `sleep_valorl5` vale 0 en la mayoría de los sujetos, de modo que es casi constante y `nearZeroVar` la descarta con razón. Su degeneración no la causa la restricción a sanos sino la propia naturaleza de la variable. No se pierde información útil al quitarla.
+
+---
+
+# 1 · Exploración del conjunto de datos
+
+Antes de modelar se explora el conjunto de datos. Se revisa el rastro de valores faltantes, la distribución del SJL y su binarización clínica, y la estructura multivariante de los predictores mediante un análisis de componentes principales.
+
+## 1.1 Depuración de valores faltantes
+
+Como el preprocesamiento corrigió en origen los valores anómalos, en la
+cohorte sana solo queda un rastro mínimo de datos faltantes (lo resume la Tabla 2 siguiente). Se
+aplica `complete.cases` para descartar el sujeto afectado y se derivan los objetos que consumen
+la partición y los modelos: `X`, `y_continuo`, `y_binario` y `UMBRAL_CLINICO`.
+
+```{r nas}
+nas <- contar_na(df_ml) |> filter(NAs > 0)
+estilo_kable(nas, caption = "Tabla 2 · Variables con valores faltantes residuales.")
+```
+
+```{r nas-filtrado}
+n_pre <- nrow(df_ml)
+df_ml <- df_ml[complete.cases(df_ml), ]
+n_post <- nrow(df_ml)
+
+# Construir los objetos derivados sobre la cohorte definitiva
+y_continuo <- df_ml$SJL
+X <- df_ml |> select(-SJL)
+
+# Variable respuesta binaria: SJL clínicamente relevante (≥ 2 h). "Alto" es el
+# primer nivel del factor, que caret toma como clase positiva por defecto.
+UMBRAL_CLINICO <- 2.0
+y_binario <- factor(
+  ifelse(y_continuo >= UMBRAL_CLINICO, "Alto", "Bajo"),
+  levels = c("Alto", "Bajo")
+)
+
+cat(sprintf("Filas eliminadas: %d  (%d → %d sujetos)\n",
+            n_pre - n_post, n_pre, n_post))
+```
+
+A partir de este punto, todos los chunks operan sobre la cohorte definitiva de `r n_post` sanos completos.
+
+## 1.2 La variable respuesta (SJL) y su binarización clínica
+
+La distribución del SJL se caracteriza en detalle en `analisis_estadistico.Rmd`. Aquí solo se retienen los dos rasgos que condicionan el modelado:
+
+- **Asimetría a la derecha.** El SJL se concentra cerca de 0 con una cola larga. Por eso la regresión se evalúa también con MAE (el error medio en horas, robusto a la cola) además del RMSE.
+- **Binarización para la clasificación.** Para la tarea de clasificación, el SJL se dicotomiza en el umbral de 2 h en una clase positiva "Alto", y su balance se muestra a continuación.
+
+```{r sjl-binario, fig.width = 5.5, fig.height = 4, fig.cap = "Figura 1 · Distribución de la clase binaria SJL alto (≥ 2 h). El fuerte desbalance condiciona la elección de métricas robustas (Balanced Accuracy, F1, Kappa) y el uso de *upsampling* dentro del fold de CV."}
+tibble(SJL = y_continuo, Alto = y_binario) |>
+  count(Alto) |>
+  mutate(pct = round(100 * n / sum(n), 1),
+         lbl = sprintf("%d\n(%.1f%%)", n, pct)) |>
+  ggplot(aes(x = Alto, y = n, fill = Alto)) +
+  geom_col(width = 0.55) +
+  geom_text(aes(label = lbl), vjust = -0.3, fontface = "bold", size = 4) +
+  scale_fill_manual(values = c(Bajo = HEADER, Alto = ACCENT)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.3))) +
+  labs(x = NULL, y = "Sujetos",
+       title = sprintf("Distribución de SJL ≥ %.1f h", UMBRAL_CLINICO),
+       subtitle = "Variable respuesta de la tarea de clasificación") +
+  theme(legend.position = "none")
+```
+
+La clase `Alto` resulta muy desbalanceada (`r round(100 * mean(y_binario == "Alto"), 1)` % positivos), pero no es un artefacto de esta cohorte, ya que en la población general la prevalencia de SJL ≥ 2 h ronda el 17 % [3], coherente con lo observado aquí. El desbalance se gestiona con métricas robustas (Balanced Accuracy, Macro F1, Kappa) y upsampling dentro del fold de CV (`sampling = "up"` en `trainControl`), aplicado solo en train, no en validación, para que el modelo no se sesgue hacia la clase mayoritaria sin introducir fuga de información.
+
+## 1.3 Análisis de Componentes Principales (PCA)
+
+El PCA reduce la dimensionalidad del espacio de predictores a un conjunto de ejes ortogonales ordenados por varianza explicada. 
+
+### 1.3.1 Preparación de la matriz numérica
+
+El PCA se calcula sobre el bloque de predictores actigráficos y conductuales. Los descriptores básicos del sujeto (edad, sexo, IMC, peso, altura y cronotipo) se dejan fuera de la matriz. Los demográficos y antropométricos (edad, sexo e IMC), externos a la actigrafía, se reservan como covariables para interpretar los ejes sin circularidad (peso y altura no se usan por separado, ya que el IMC los resume como covariable antropométrica).
+
+El **cronotipo** se trata aparte, porque ni entra en la matriz ni se usa como covariable, y conviene justificarlo:
+
+- **No entra en el PCA.** La razón de peso es que es redundante. El cronotipo es en la práctica una categorización de la fase del ritmo, información que ya está en la matriz de forma numérica y más fina mediante las variables de hora. Incluirlo duplicaría, en versión gruesa, algo que las numéricas ya capturan mejor. Además, al ser un factor de cinco niveles, solo podría entrar como cuatro variables indicadoras (*dummies*) mutuamente excluyentes para un mismo rasgo, una huella desproporcionada en la estructura de covarianza. Esto no afecta a los indicadores conductuales binarios (`indicador*`), ya que cada uno es una sola columna 0/1, con la misma huella que cualquier otra variable y sin duplicar a ninguna, así que sí se incluyen.
+- **No se usa como covariable de interpretación**, porque sería circular, al derivarse de las mismas variables de fase que forman los componentes (sobre todo PC3, como se verá más adelante).
+
+Edad, sexo e IMC siguen disponibles como predictores en los modelos. El cronotipo, en cambio, se excluye también de ellos por la misma redundancia con las variables de hora. Los indicadores booleanos se pasan a {0, 1} y todo se centra y se escala a varianza unitaria (`center = TRUE`, `scale. = TRUE`), paso indispensable con rangos heterogéneos.
+
+```{r pca-preparacion}
+descriptores_sujeto <- c("edad_estudio", "sexo", "imc",
+                         "peso_kg", "altura_cm")
+X_pca <- X |>
+  select(-any_of(descriptores_sujeto)) |>
+  mutate(across(where(is.logical), as.integer))
+
+cat(sprintf("Matriz para PCA: %d sujetos × %d predictores actigráficos/conductuales.\n",
+            nrow(X_pca), ncol(X_pca)))
+```
+
+### 1.3.2 Idoneidad del PCA: adecuación muestral (KMO)
+
+El PCA solo comprime información si las variables originales están intercorrelacionadas. Si fueran ortogonales entre sí no habría redundancia que resumir y cada componente recogería una única variable. Esa premisa se comprueba antes de calcularlo con la **medida de adecuación muestral de Kaiser-Meyer-Olkin (KMO)**, que compara las correlaciones simples con las parciales y cuantifica qué fracción de la varianza es común (atribuible a factores subyacentes) frente a específica. Se lee con la escala de Kaiser (≥ 0.90 excelente, 0.80-0.90 notable, 0.70-0.80 intermedia, 0.60-0.70 mediocre, 0.50-0.60 bajo, por debajo de 0.50 inaceptable) [4] y se reporta el valor global y el de cada variable (MSA).
+
+Se prescinde deliberadamente del test de esfericidad de Bartlett, que suele acompañar al KMO en este paso, ya que se ve sesgado por el tamaño muestral. Con una muestra de `r nrow(X_pca)` sujetos, Bartlett rechaza la esfericidad de forma prácticamente automática, de modo que su resultado deja de ser informativo.
+
+```{r pca-idoneidad}
+# Matriz de correlaciones del bloque de PCA.
+R_pca <- cor(X_pca)
+
+# KMO
+kmo <- KMO(R_pca)
+
+# Etiqueta cualitativa del KMO en la escala de Kaiser.
+etiqueta_kmo <- cut(kmo$MSA, c(-Inf, .5, .6, .7, .8, .9, Inf),
+                    labels = c("inaceptable", "bajo", "mediocre",
+                               "intermedia", "notable", "excelente"))
+
+tibble::tribble(
+  ~Medida, ~Resultado,
+  "KMO global (MSA)", sprintf("%.4f (%s)", kmo$MSA, etiqueta_kmo),
+  "MSA por variable", sprintf("mín %.4f · mediana %.4f · máx %.4f",
+                              min(kmo$MSAi), median(kmo$MSAi), max(kmo$MSAi)),
+  "Variables con MSA inferior a 0.5",
+    sprintf("%d de %d", sum(kmo$MSAi < 0.5), length(kmo$MSAi))
+) |>
+  estilo_kable(caption = "Tabla 3 · Idoneidad del PCA: medida de adecuación muestral de Kaiser-Meyer-Olkin (KMO) sobre los predictores actigráficos y conductuales.")
+```
+
+La medida de adecuación muestral confirma que el PCA es pertinente. El **KMO global es `r round(kmo$MSA, 4)`** (`r etiqueta_kmo` en la escala de Kaiser), y ninguna de las `r ncol(X_pca)` variables baja del mínimo de 0.5 (mediana `r round(median(kmo$MSAi), 4)`). La proporción de varianza común es alta y el espacio de predictores es claramente factorizable. 
+
+### 1.3.3 Cálculo del PCA
+
+El PCA se calcula sobre la matriz centrada y escalada a varianza unitaria, y el resultado se persiste en disco (`saveRDS`) para reutilizarlo en las secciones siguientes. El signo de cada componente es matemáticamente arbitrario (el PCA define el eje, no hacia dónde apunta), así que se ancla de forma determinista. En cada componente, el predictor de mayor carga absoluta queda con signo positivo. De este modo la orientación es estable entre ejecuciones y la interpretación, directa, sin el volteo arbitrario que dejaría todas las cargas en negativo.
+
+```{r pca-fit}
+pca_path <- file.path(MODELS_DIR, "pca_res.rds")
+
+if (file.exists(pca_path)) {
+  pca_res <- readRDS(pca_path)
+  cat("PCA cargado de caché.\n")
+} else {
+  pca_res <- prcomp(X_pca, center = TRUE, scale. = TRUE)
+  # Se ancla el signo de forma determinista.
+  signos <- apply(pca_res$rotation, 2, function(col) sign(col[which.max(abs(col))]))
+  pca_res$rotation <- sweep(pca_res$rotation, 2, signos, `*`)
+  pca_res$x <- sweep(pca_res$x, 2, signos, `*`)
+  saveRDS(pca_res, pca_path)
+  cat("PCA calculado, signo de los componentes anclado y guardado en caché.\n")
+}
+
+```
+
+### 1.3.4 Varianza explicada y elección del número de componentes
+
+```{r pca-varianza-tabla}
+# Varianza explicada
+var_exp <- pca_res$sdev^2
+prop_exp <- 100 * var_exp / sum(var_exp)
+cum_exp <- cumsum(prop_exp)
+
+tibble(
+  PC = paste0("PC", 1:10),
+  `Varianza (%)` = formatC(prop_exp[1:10], format = "f", digits = 2),
+  `Acumulada (%)` = formatC(cum_exp[1:10], format = "f", digits = 2)
+) |>
+  estilo_kable(caption = "Tabla 4 · Varianza explicada por los 10 primeros componentes principales.")
+```
+
+```{r pca-scree, fig.width = 9, fig.height = 4.5, fig.cap = "Figura 2 · *Scree plot*. Barras azul marino oscuro: varianza individual de cada componente principal. Línea discontinua roja con puntos: varianza acumulada (etiquetada en %). Línea vertical punteada: codo detectado automáticamente por el método Kneedle (uik)."}
+# Detección objetiva del codo con uik (Kneedle).
+# El método normaliza ambos ejes a [0,1], traza la recta entre el primer y el
+# último punto, y selecciona el PC cuya distancia perpendicular a esa recta
+# es máxima."
+n_eval <- min(20, length(prop_exp))
+codo_pc <- inflection::uik(seq_len(n_eval), prop_exp[seq_len(n_eval)])
+
+scree_df <- tibble(
+  PC = seq_len(n_eval),
+  Prop = prop_exp[seq_len(n_eval)],
+  Cum = cum_exp[seq_len(n_eval)]
+)
+
+ggplot(scree_df, aes(x = PC)) +
+  geom_col(aes(y = Prop), fill = HEADER, alpha = 0.85, width = 0.7) +
+  geom_line(aes(y = Cum), color = ACCENT, linewidth = 1, linetype = "dashed") +
+  geom_point(aes(y = Cum), color = ACCENT, size = 2.3) +
+  geom_text(aes(y = Cum, label = sprintf("%.0f%%", Cum)),
+            color = ACCENT, size = 2.8, vjust = -0.7) +
+  geom_vline(xintercept = codo_pc, color = "grey40", linetype = "dotted") +
+  annotate("text", x = codo_pc + 0.3, y = max(scree_df$Prop) * 0.9,
+           label = sprintf("Codo (Kneedle):\nPC %d", codo_pc),
+           hjust = 0, color = "grey30", size = 3.2) +
+  scale_x_continuous(breaks = seq(1, n_eval, by = 2)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(x = "Componente principal", y = "Varianza explicada (%)")
+```
+
+La varianza se reparte de forma muy gradual. El primer componente explica el `r round(prop_exp[1], 2)` % y se necesitan `r which(cum_exp >= 50)[1]` componentes para alcanzar el 50 %. No hay, por tanto, un eje dominante único, algo esperable en datos multimodales, donde la variabilidad biológica se reparte entre muchas direcciones. El codo de Kneedle [5] se sitúa en el PC `r codo_pc`.
+
+El codo es solo uno de los criterios para fijar el número de componentes. Se contrasta con otros cuatro criterios complementarios, las **coordenadas óptimas** de nScree (un codo objetivo calculado), el análisis paralelo de **Horn** [6] (retener solo los componentes cuyo autovalor supera al de datos aleatorios sin estructura, simulados como referencia nula), el de **Kaiser** (retener los componentes con autovalor mayor que 1, es decir, que explican más que una variable estandarizada) y el umbral clásico de **varianza acumulada** del 75 %. Los criterios discrepan de forma informativa (Tabla 5).
+
+```{r pca-retencion}
+set.seed(0)
+ap <- nFactors::parallel(subject = nrow(X_pca), var = ncol(X_pca),
+                         rep = 100, cent = 0.05)
+nS <- nScree(x = var_exp, aparallel = ap$eigen$qevpea)
+
+n_kaiser <- nS$Components$nkaiser
+n_paralelo <- nS$Components$nparallel
+n_oc <- nS$Components$noc  # coordenadas óptimas (codo objetivo)
+n_75 <- which(cum_exp >= 75)[1]
+
+tibble::tribble(
+  ~Criterio, ~`Nº comp.`, ~Fundamento,
+  "Codo de Kneedle (uik)",        as.character(codo_pc),    "quiebre de la curva de varianza",
+  "Coordenadas óptimas (nScree)", as.character(n_oc),       "codo objetivo, no gráfico",
+  "Análisis paralelo (Horn)",     as.character(n_paralelo), "autovalor por encima del ruido simulado",
+  "Kaiser (autovalor > 1)",       as.character(n_kaiser),   "más varianza que una variable aislada",
+  "Varianza acumulada ≥ 75 %",    as.character(n_75),       "umbral clásico de información retenida"
+) |>
+  estilo_kable(caption = "Tabla 5 · Número de componentes a retener según cinco criterios.")
+```
+
+### 1.3.5 Interpretación de los primeros componentes retenidos
+
+El codo retiene los `r codo_pc` primeros componentes. Para darles significado se examinan, en cada uno, sus cargas (qué variables lo construyen, su sentido biológico) y sus correlaciones con las covariables clínicas (con qué rasgo del sujeto se relaciona).
+
+Los *loadings* (matriz `rotation` de `prcomp`) cuantifican el peso de cada variable original en cada componente, donde el signo da la dirección y la magnitud, la importancia. De ellos se derivan las tres lecturas habituales, la carga factorial (correlación variable-componente, `loading × sd`), la contribución de cada variable a cada eje (`100 × loading²`) y la calidad de representación o cos² (`carga²`), la fracción de la varianza de la variable que captura ese eje.
+
+```{r pca-loadings, fig.width = 10, fig.height = 8, fig.cap = "Figura 3 · Top 12 variables con mayor loading en cada uno de los componentes PC1-PC4. Color rojo: loading positivo; azul: negativo."}
+n_top <- 12
+
+extraer_top <- function(idx_pc) {
+  loadings <- pca_res$rotation[, idx_pc]
+  top_idx <- order(abs(loadings), decreasing = TRUE)[seq_len(n_top)]
+  tibble(
+    Variable = names(loadings)[top_idx],
+    Loading = loadings[top_idx],
+    PC = paste0("PC", idx_pc)
+  )
+}
+
+df_loadings <- bind_rows(lapply(seq_len(codo_pc), extraer_top))
+df_loadings$Variable <- acortar_var(df_loadings$Variable)
+
+ggplot(df_loadings,
+       aes(x = reorder(Variable, abs(Loading)),
+           y = Loading, fill = Loading > 0)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c(`FALSE` = HEADER, `TRUE` = ACCENT)) +
+  facet_wrap(~ PC, scales = "free", ncol = 2) +
+  coord_flip() +
+  labs(x = NULL, y = "Loading") +
+  theme(axis.text.y = element_text(size = 7))
+```
+
+```{r pca-contrib-cos2}
+# Carga (correlación variable-componente), contribución y cos²
+carga <- sweep(pca_res$rotation, 2, pca_res$sdev, `*`)
+contrib <- 100 * pca_res$rotation^2
+cos2 <- carga^2
+
+# Las 3 variables que más contribuyen a cada componente, con las tres métricas.
+tabla_triada <- dplyr::bind_rows(lapply(seq_len(codo_pc), function(k) {
+  top <- order(contrib[, k], decreasing = TRUE)[1:3]
+  tibble(
+    PC = paste0("PC", k),
+    Variable = rownames(carga)[top],
+    `Carga (r)` = formatC(carga[top, k], format = "f", digits = 4),
+    `Contribución (%)` = formatC(contrib[top, k], format = "f", digits = 4),
+    `cos² (calidad)` = formatC(cos2[top, k], format = "f", digits = 4)
+  )
+}))
+
+tab_6b <- estilo_kable(dplyr::select(tabla_triada, -PC),
+             caption = "Tabla 6 · Las 3 variables que más contribuyen a cada componente retenido: carga factorial (correlación con el eje), contribución (%) a ese eje y calidad de representación (cos²).")
+for (i in seq_len(codo_pc)) {
+  tab_6b <- pack_rows(tab_6b, paste0("PC", i), 3 * i - 2, 3 * i, label_row_css = banda)
+}
+tab_6b
+```
+
+Para anclar cada componente en un rasgo, se correlaciona cada uno con el SJL y con las covariables externas a la actigrafía (edad, sexo e IMC).
+
+```{r pca-covariables, fig.width = 8, fig.height = 4.5, fig.cap = sprintf("Figura 4 · Correlación de Spearman de los componentes retenidos (PC1-PC4) con el SJL y las covariables externas (edad, sexo, IMC). Rojo: correlación positiva; azul: negativa. Asteriscos: significación de la ρ con p ajustado por Holm (comparaciones múltiples); *** p<0.001, ** p<0.01, * p<0.05. Con n = %d casi todo es significativo, así que la lectura se hace mayormente por la magnitud de ρ.", nrow(X_pca))}
+covars <- tibble(
+  SJL = y_continuo,
+  Edad = X$edad_estudio,
+  IMC = X$imc,
+  `Sexo (M)` = as.integer(df_ml$sexo == "M")
+)
+k_pc <- codo_pc  # solo los componentes retenidos (el codo)
+
+asoc_cov <- tidyr::expand_grid(pc = seq_len(k_pc), Var = names(covars)) |>
+  mutate(
+    ct = map2(pc, Var, ~ suppressWarnings(
+           cor.test(pca_res$x[, .x], covars[[.y]], method = "spearman", exact = FALSE))),
+    rho = map_dbl(ct, ~ unname(.x$estimate)),
+    # p ajustado por Holm 
+    p_adj = p.adjust(map_dbl(ct, ~ .x$p.value), method = "holm"),
+    PC = factor(paste0("PC", pc), levels = paste0("PC", seq_len(k_pc))),
+    Var = factor(Var, levels = names(covars)),
+    sig = as.character(cut(p_adj, c(-Inf, .001, .01, .05, Inf),
+                           labels = c("***", "**", "*", "")))
+  )
+
+rho_txt <- function(p, v) sprintf("%+.2f", asoc_cov$rho[asoc_cov$PC == p & asoc_cov$Var == v])
+
+ggplot(asoc_cov, aes(Var, PC, fill = rho)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  geom_text(aes(label = sprintf("%.2f%s", rho, sig), color = abs(rho) > 0.45),
+            size = 3.1, show.legend = FALSE) +
+  scale_color_manual(values = c(`TRUE` = "white", `FALSE` = "grey15")) +
+  scale_fill_gradient2(low = HEADER, mid = "white", high = ACCENT,
+                       midpoint = 0, limits = c(-1, 1), name = "ρ") +
+  scale_y_discrete(limits = rev) +
+  labs(x = NULL, y = NULL) +
+  theme(panel.grid = element_blank())
+```
+
+Las covariables están a su vez correlacionadas entre sí (por ejemplo, IMC y sexo, con ρ ≈ `r sprintf("%+.2f", cor(covars$IMC, covars[["Sexo (M)"]], method = "spearman"))`), de modo que la correlación bivariada de la Figura 4 no distingue el efecto propio de cada una del que comparten. La propia Figura 4 indica además dónde merece la pena ese análisis. Los componentes con asociación más marcada a las covariables son **PC1 y PC3**, mientras que PC2 es casi independiente de la demografía y PC4 solo muestra un vínculo débil con la edad, así que el ajuste detallado se centra en PC1 y PC3. Se procede en dos pasos. Primero se comprueba que ninguna pareja de covariables esté tan correlacionada como para impedir el ajuste (colinealidad, Tabla 7), y luego se calcula la asociación de cada covariable con PC1 y PC3 ajustando por las demás, mediante correlaciones parciales de Spearman (Tabla 8).
+
+```{r pca-covar-intercor}
+# Correlación de Spearman entre covariables
+covar_inter <- covars |> select(Edad, IMC, `Sexo (M)`)
+M_inter <- cor(covar_inter, method = "spearman")
+
+as.data.frame(formatC(M_inter, format = "f", digits = 2)) |>
+  tibble::rownames_to_column("Covariable") |>
+  estilo_kable(caption = "Tabla 7 · Correlación de Spearman entre las covariables.")
+```
+
+El valor más alto entre covariables es ρ ≈ `r sprintf("%.2f", max(abs(M_inter[upper.tri(M_inter)])))` (IMC y sexo), muy por debajo del umbral de colinealidad (|ρ| > 0.8), así que sus efectos sobre los componentes pueden estimarse de forma conjunta sin que el ajuste confunda unas covariables con otras.
+
+```{r pca-asoc-ajustada}
+# Asociación ajustada
+asoc_ajustada <- purrr::map_dfr(c(1, 3), function(pc_idx) {
+  d <- dplyr::bind_cols(PC = pca_res$x[, pc_idx], covar_inter)
+  purrr::map_dfr(names(covar_inter), function(v) {
+    ps <- partial_spearman(d, "PC", v, setdiff(names(covar_inter), v))
+    tibble(
+      Componente = paste0("PC", pc_idx),
+      Covariable = v,
+      `ρ bivariada` = sprintf("%+.2f", cor(d$PC, d[[v]], method = "spearman")),
+      `ρ parcial (ajustada)` = sprintf("%+.2f", ps$rho_partial)
+    )
+  })
+})
+
+estilo_kable(dplyr::select(asoc_ajustada, -Componente),
+             caption = "Tabla 8 · Asociación de cada covariable con PC1 y PC3: correlación de Spearman bivariada frente a la parcial, que ajusta por las otras dos covariables externas.") |>
+  pack_rows("PC1", 1, 3, label_row_css = banda) |>
+  pack_rows("PC3", 4, 6, label_row_css = banda)
+```
+
+Al ajustar, todas las asociaciones conservan su signo. La edad es el correlato externo dominante en ambos ejes y se mantiene tras el ajuste. En PC1 incluso se refuerza (de ρ ≈ +0.22 a +0.27 al descontar IMC y sexo, que la atenuaban) y en PC3 apenas cae (de −0.31 a −0.27). En cambio, en PC3 las asociaciones de IMC y sexo se reducen al ajustar por edad (el IMC pasa de ρ ≈ −0.24 a ≈ −0.12), señal de que en parte iban de la mano de la edad. La lectura bivariada de la Figura 4 queda así confirmada y matizada.
+
+La asociación de PC1 con la edad no es monótona, y la ρ no capta la tendencia completa, así que la Figura 5 muestra su forma real con un suavizado.
+
+```{r pca-pc1-edad, fig.width = 8, fig.height = 4.5, fig.cap = "Figura 5 · Robustez del ritmo (PC1) frente a la edad. Puntos: sujetos; curva roja con banda: suavizado GAM con su IC 95 %."}
+ggplot(data.frame(Edad = X$edad_estudio, PC1 = pca_res$x[, 1]), aes(Edad, PC1)) +
+  geom_point(alpha = 0.15, color = "grey55", size = 0.8) +
+  geom_hline(yintercept = 0, color = "grey80", linetype = "dashed") +
+  geom_smooth(method = "gam", formula = y ~ s(x), color = ACCENT, fill = ACCENT) +
+  labs(x = "Edad (años)", y = "PC1 (robustez del ritmo)")
+```
+
+**Lectura de los cuatro componentes.** Combinando las cargas (Figura 3, Tabla 6) con las correlaciones (Figura 4), los cuatro ejes se leen así:
+
+- **PC1 · robustez del ritmo** (`r round(prop_exp[1], 2)` % de varianza). Carga, de forma consistente, en los índices de robustez y amplitud del ritmo de actividad-reposo (CFI, CHS, IS, RA y RAN de los canales de movimiento, TAP e intensidad), de modo que un valor alto indica un ritmo circadiano marcado y estable. Sus variables mejor representadas son el tiempo de movimiento y el TAP del canal CHS (carga ≈ 0.90), con un cos² ≈ 0.81. Entre las covariables externas, las asociaciones monótonas más marcadas son con el sexo (ρ ≈ `r rho_txt("PC1", "Sexo (M)")`, hacia el femenino) y el IMC (ρ ≈ `r rho_txt("PC1", "IMC")`, hacia valores bajos), ambas modestas. La relación con la edad es no monótona y modesta, y su ρ (`r rho_txt("PC1", "Edad")` en la Figura 4) solo refleja la rama ascendente. Según la Figura 5, la robustez es baja en los adultos jóvenes (quizá por horarios más irregulares), alcanza su máximo en la mediana edad y vuelve a descender en la vejez, coherente con la pérdida de robustez circadiana del envejecimiento, aunque la edad explica solo una pequeña parte de la variabilidad de PC1.
+- **PC2 · actividad elevada frente a sueño consolidado** (`r round(prop_exp[2], 2)` %). Su polo positivo combina, con peso similar, la actividad motora general (las medias de movimiento, intensidad y TAP) y la actividad que persiste durante el reposo (índices en la ventana de menor actividad, sufijo L10/L5), más la luz nocturna (`light_valorl10`). El polo negativo recoge la cantidad y consolidación del sueño (tiempo real y total de sueño, periodo de sueño y `sleep_valorm10`). Describe así un perfil de más actividad, general y también en el reposo, con sueño corto frente a uno de sueño abundante y consolidado. Es el componente **más ligado al SJL** (ρ ≈ `r rho_txt("PC2", "SJL")`) y casi independiente de la demografía, y ese patrón se asocia a mayor desfase social.
+- **PC3 · fase del ritmo** (`r round(prop_exp[3], 2)` %). Lo dominan las horas de las ventanas de menor actividad (L5, L10) y de mayor actividad (M5, M10) de todos los canales (`sleep_horam5decimal`, `tap_horal10decimal`, `tap_horal5decimal`…), es decir, el momento del día en que caen el reposo y la actividad. Captura cuándo ocurre el ritmo, no cuán marcado es. Todas estas horas cargan en el mismo sentido, de modo que el eje desplaza el reloj completo, y un PC3 alto corresponde a horas más tardías, esto es, una fase retrasada. Entre las covariables externas se asocia sobre todo a menor edad (ρ ≈ `r rho_txt("PC3", "Edad")`; los más jóvenes presentan fases más retrasadas) y, de forma más leve, a menor IMC (ρ ≈ `r rho_txt("PC3", "IMC")`) y sexo femenino (ρ ≈ `r rho_txt("PC3", "Sexo (M)")`).
+- **PC4 · canal de temperatura** (`r round(prop_exp[4], 2)` %). Opone el nivel de temperatura periférica (valores medios y de las ventanas, y la temperatura en las 2 h en torno al sueño, con carga positiva) a la amplitud, variabilidad y robustez de su ritmo (RA, SD, RAN, CFI e IS, con carga negativa), de modo que un PC4 alto describe una temperatura más alta pero menos rítmica y amplia. Cargan también, algo menos, la luz (azul y total) en las 2 h tras despertar.
+
+### 1.3.6 Proyección de los sujetos en el plano PC1-PC2
+
+El plano PC1-PC2 se muestra dos veces. A la izquierda, coloreado por el SJL **continuo** (la vista de la regresión); a la derecha, por la **clase** Alto/Bajo (la vista de la clasificación, que no es más que la misma proyección con la etiqueta categórica superpuesta). Si el SJL se ordenara según la estructura dominante de los predictores, se vería un gradiente o una separación de clases a lo largo de algún eje.
+
+```{r pca-scores, fig.width = 10, fig.height = 4.5, fig.cap = "Figura 6 · Misma proyección PC1-PC2 con dos coloreados. Izquierda: SJL en escala continua (problema de regresión). Derecha: clase binaria, Alto (≥ 2 h, en rojo) frente a Bajo (problema de clasificación), con elipses al 95 % y el centroide de cada clase."}
+pca_scores <- as_tibble(pca_res$x[, 1:2]) |>
+  mutate(SJL = y_continuo, Clase = y_binario)
+
+x1 <- sprintf("PC1 (%.2f %%)", prop_exp[1])
+x2 <- sprintf("PC2 (%.2f %%)", prop_exp[2])
+
+# Centroide (media de PC1 y PC2)
+centroides_clase <- pca_scores |>
+  group_by(Clase) |>
+  summarise(PC1 = mean(PC1), PC2 = mean(PC2), .groups = "drop")
+
+p_cont <- ggplot(pca_scores, aes(PC1, PC2, color = SJL)) +
+  geom_hline(yintercept = 0, color = "grey80") +
+  geom_vline(xintercept = 0, color = "grey80") +
+  geom_point(alpha = 0.55, size = 1.4) +
+  scale_color_gradientn(colors = PAL_SEQ, name = "SJL (h)") +
+  labs(x = x1, y = x2) +
+  theme(legend.position = "right")
+
+p_clase <- ggplot(pca_scores, aes(PC1, PC2, color = Clase)) +
+  geom_hline(yintercept = 0, color = "grey80") +
+  geom_vline(xintercept = 0, color = "grey80") +
+  geom_point(alpha = 0.55, size = 1.4) +
+  stat_ellipse(type = "norm", level = 0.95, linewidth = 0.8) +
+  geom_point(data = centroides_clase, aes(fill = Clase),
+             shape = 21, size = 4, stroke = 1.1, color = "grey20", show.legend = FALSE) +
+  scale_color_manual(values = c(Alto = ACCENT, Bajo = "grey70"), name = "SJL") +
+  scale_fill_manual(values = c(Alto = ACCENT, Bajo = "grey70"), guide = "none") +
+  labs(x = x1, y = x2) +
+  theme(legend.position = "right")
+
+(p_cont + p_clase + plot_layout(guides = "collect") +
+   plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")")) &
+  theme(legend.position = "right")
+```
+
+En ambos coloreados los sujetos forman una nube continua, sin fronteras netas, ya que las elipses de Alto y Bajo se solapan ampliamente y ningún eje separa las clases de forma limpia. Pero el solapamiento no implica ausencia de estructura. Los **centroides sí se desplazan**, con la clase Alto en PC1 más bajo y PC2 más alto que la Bajo. Lo que ocurre es que la dispersión dentro de cada clase es grande frente a la distancia entre centros, así que las nubes se pisan pese a tener centros distintos. La significancia y el tamaño de ese desplazamiento se cuantifican a continuación.
+
+```{r pca-sjl-significancia}
+tabla_sig <- purrr::map_dfr(c("PC1", "PC2"), function(pc) {
+  v <- pca_scores[[pc]]
+  alto <- v[pca_scores$Clase == "Alto"]
+  bajo <- v[pca_scores$Clase == "Bajo"]
+  w <- suppressWarnings(wilcox.test(alto, bajo))
+  d <- pluck_cliff(effectsize::cliffs_delta(alto, bajo))
+  tibble(
+    Eje = pc,
+    `Centro Alto` = formatC(mean(alto), format = "f", digits = 4),
+    `Centro Bajo` = formatC(mean(bajo), format = "f", digits = 4),
+    `p (Mann-Whitney)` = fmt_p(w$p.value),
+    `Cliff's δ` = sprintf("%+.3f", d),
+    Magnitud = interpreta_cliff(d)
+  )
+})
+estilo_kable(tabla_sig, caption = "Tabla 9 · Desplazamiento de los centros de PC1 y PC2 entre las clases de SJL (Alto vs Bajo): Mann-Whitney como prueba de significancia y Cliff's δ como tamaño del efecto.")
+```
+
+El desplazamiento de los centros es muy significativo en ambos ejes (Mann-Whitney), pero con n = `r nrow(pca_scores)` sujetos casi cualquier diferencia sale significativa, así que lo informativo es el tamaño del efecto (Cliff's δ, Tabla 9). Y ahí aparece un matiz revelador. Aunque PC2 es el eje más correlacionado con el SJL continuo, es PC1 el que mejor separa las clases Alto/Bajo (su Cliff's δ es mayor en magnitud). No es contradictorio, porque la asociación de PC2 con el SJL es gradual a lo largo de todo el rango, mientras que la de PC1 se concentra en el extremo clínico (≥ 2 h), de modo que al binarizar es PC1 quien despega ese grupo.
+
+---
+
+# 2 · Partición
+
+Antes de entrenar ningún modelo se reserva un conjunto de test que no se toca hasta la evaluación final. Esto evita el sesgo optimista que aparece cuando el mismo conjunto se usa para ajustar hiperparámetros y para reportar el rendimiento. 
+
+La partición se hace estratificada por cuartiles del SJL. `createDataPartition` ya estratifica, pero de forma distinta según el tipo de variable que reciba. Si se le pasa un factor (una variable de clase, el caso típico de la clasificación), reparte preservando la proporción de cada clase entre train y test. Si se le pasa una variable numérica, la trocea internamente en grupos por percentiles (cinco por defecto) y muestrea dentro de cada grupo. Es decir, con una respuesta continua como el SJL la estratificación ya ocurriría de manera automática.
+
+Aquí ese paso se hace explícito. El SJL se discretiza con `cut()` en sus cuatro cuartiles (Q1-Q4) y es ese factor el que se le pasa a `createDataPartition`. Se busca con ello transparencia y control, dejando a la vista en el propio código qué estratos se usan y fijando su número (cuatro cuartiles) en lugar de depender del valor por defecto interno de la función. El objetivo último es que ambos subconjuntos cubran todo el rango del SJL, incluidos los valores altos, y que ningún tramo quede sobrerrepresentado ni infrarrepresentado por azar. 
+
+```{r particion}
+# Cuartiles del SJL como estratos
+estratos <- cut(y_continuo,
+                breaks = quantile(y_continuo, probs = seq(0, 1, 0.25)),
+                include.lowest = TRUE, labels = c("Q1", "Q2", "Q3", "Q4"))
+
+# Partición 80/20 estratificada
+set.seed(0)
+idx_train <- caret::createDataPartition(estratos, p = 0.80, list = FALSE)[, 1]
+
+# Construcción de los DataFrames de train y test para regresión
+df_train <- df_ml[idx_train, ]
+df_test <- df_ml[-idx_train, ]
+
+# Idem para la tarea de clasificación: se sustituye SJL por el factor Alto.
+df_train_clf <- df_train |> mutate(SJL = NULL, Alto = y_binario[idx_train])
+df_test_clf <- df_test |> mutate(SJL = NULL, Alto = y_binario[-idx_train])
+
+cat(sprintf("Train: %d sujetos (%.1f%%)\n", nrow(df_train),
+            100 * nrow(df_train) / nrow(df_ml)))
+cat(sprintf("Test:  %d sujetos (%.1f%%)\n", nrow(df_test),
+            100 * nrow(df_test) / nrow(df_ml)))
+```
+
+```{r particion-balance}
+# Verificación: la distribución del SJL en train y test debería ser similar.
+bind_rows(
+  tibble(Conjunto = "Train", SJL = df_train$SJL),
+  tibble(Conjunto = "Test", SJL = df_test$SJL)
+) |>
+  group_by(Conjunto) |>
+  summarise(
+    n = n(),
+    Media = mean(SJL),
+    DE = sd(SJL),
+    Mediana = median(SJL),
+    Q1 = quantile(SJL, 0.25),
+    Q3 = quantile(SJL, 0.75),
+    `Altos (n)` = sum(SJL >= UMBRAL_CLINICO),
+    `% Altos` = round(100 * mean(SJL >= UMBRAL_CLINICO), 1),
+    .groups = "drop"
+  ) |>
+  mutate(across(c(Media, DE, Mediana, Q1, Q3), ~ round(.x, 3))) |>
+  estilo_kable(caption = "Tabla 10 · Verificación de la partición. El SJL conserva descriptivos comparables entre train y test, y los casos con SJL alto (≥ 2 h) se reparten de forma proporcional, en número y en porcentaje.")
+```
+
+Las dos últimas columnas confirman lo que más importa para la tarea de clasificación, y es que la prevalencia de SJL alto apenas cambia entre train y test (en torno al 14 % en ambos). Así, la estratificación por cuartiles no solo cubre todo el rango del SJL, sino que conserva el desbalance real de la cohorte en los dos subconjuntos, sin que el azar concentre la clase minoritaria en uno de ellos.
+
+---
+
+# 3 · Modelos de regresión
+
+Cuatro familias de algoritmos sobre los `r ncol(df_train) - 1` predictores completos: un ensemble por *bagging* (Random Forest), un modelo de margen con kernel (SVM radial), un modelo lineal regularizado (Elastic Net) y un ensemble por *boosting* (XGBoost).
+
+## 3.1 Validación cruzada y métricas
+
+El flujo de modelado se apoya en el framework `caret` [7]. Sobre el conjunto de entrenamiento se aplica 5-fold CV repetida 3 veces, que es el compromiso estándar entre coste computacional y estabilidad del estimador. Cada hiperparámetro se evalúa así sobre 15 particiones distintas, lo que reduce la varianza del estimado de RMSE/MAE/R².
+
+El mismo `trainControl` se reutiliza para los cuatro modelos de regresión para que los `resamples` sean comparables. Para la tarea de clasificación se construirá un `trainControl` análogo, con `classProbs = TRUE`, `sampling = "up"` y `summaryFunction = multiClassSummary`.
+
+```{r ctrl-regresion}
+# Semillas para reproducibilidad del ajuste en paralelo
+hacer_semillas <- function(n_combos = 100, n_resamples = 15, seed = 0) {
+  set.seed(seed)
+  s <- vector("list", n_resamples + 1)
+  for (i in seq_len(n_resamples)) s[[i]] <- sample.int(1e6, n_combos)
+  s[[n_resamples + 1]] <- sample.int(1e6, 1L)
+  s
+}
+
+ctrl_reg <- caret::trainControl(
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3,
+  seeds = hacer_semillas(),
+  savePredictions = "final",
+  returnResamp = "all",
+  verboseIter = FALSE,
+  preProcOptions = list(cutoff = 0.9),
+  allowParallel = TRUE
+)
+```
+
+Las demás opciones especificadas del `trainControl` recogen decisiones concretas:
+
+- `savePredictions = "final"` y `returnResamp = "all"`. El primero guarda las predicciones de validación del mejor modelo; el segundo conserva las métricas de los 15 resamples de cada configuración, necesarias para comparar los modelos sobre los mismos folds.
+- `preProcOptions = list(cutoff = 0.9)`. Fija en 0.9 el umbral del filtro de colinealidad que aplicarán los modelos sensibles a la escala al llamar a `preProcess = c("corr", "center", "scale")`. De cada par de predictores con correlación |r| > 0.9, `caret` (mediante `findCorrelation`) descarta uno. Ese 0.9 es además el valor por defecto de `caret` para `cutoff`, de modo que esta línea solo lo hace explícito. La matriz de correlaciones que decide qué variable se elimina se obtiene solo con el train del fold, así que las filas del test no participan nunca en esa decisión; calcularla sobre todos los sujetos sería una fuga de información sutil. Por la misma lógica, la colinealidad no se filtra de forma global junto a `nearZeroVar`, que sí es un descarte estructural, independiente de la relación entre predictores, y puede hacerse sobre toda la cohorte. En la práctica el filtro beneficia sobre todo al SVM, ya que el Random Forest es insensible a ella.
+- `seeds = hacer_semillas()`. Fija las semillas que `caret` usa en cada resample del ajuste en paralelo, de modo que la selección de hiperparámetros es reproducible entre ejecuciones. Sin esto, cada ejecución en paralelo puede dar hiperparámetros distintos (cada worker arranca con su propio estado aleatorio). Actúa junto al `set.seed(0)` que precede a cada `train()`, que fija los *folds* y `seeds` fija el ajuste de cada modelo dentro de cada fold.
+- `allowParallel = TRUE`. Reparte el entrenamiento entre los núcleos definidos en `N_CORES`.
+
+### Métricas reportadas
+
+| Métrica | Interpretación | Sensibilidad a outliers |
+|---|---|---|
+| RMSE (Root Mean Squared Error) | Error cuadrático medio en la escala de la respuesta (horas) | Alta: penaliza más los errores grandes |
+| MAE (Mean Absolute Error) | Error absoluto medio en la escala de la respuesta | Lineal: más robusta |
+| R² | Fracción de la varianza del SJL explicada por el modelo | Baja |
+
+Caret optimiza por defecto RMSE en regresión. Se reportan las tres métricas para dar lectura completa: RMSE para la comparación entre modelos (criterio de selección), MAE para la lectura clínica ("el modelo se equivoca en promedio por X horas"), y R² para situar el rendimiento en términos de varianza explicada.
+
+Las parrillas de los tres modelos sensibles al espacio de predictores se generan con una constructora cada una. Así, el conjunto completo y los subconjuntos que se reentrenan más adelante (Set B, SBF/RFE) comparten exactamente la misma búsqueda salvo lo que depende del número de predictores: `mtry` en el Random Forest, la secuencia de `lambda` en el Elastic Net y `sigma` en el SVM.
+
+```{r grid-builders}
+# Constructoras de parrilla en función del espacio de predictores. Devuelven la
+# misma rejilla candidata; solo cambia lo que depende de los predictores (mtry,
+# lambda, sigma), que se pasa como argumento. grid_rf_p admite además splitrule y
+# min.node.size para reutilizarse en regresión (variance) y clasificación (gini).
+grid_rf_p <- function(p, splitrule = "variance", min.node.size = c(5, 10, 20)) expand.grid(
+  mtry = unique(c(round(sqrt(p)), round(p / 5), round(p / 3),
+                  round(p / 2), round(2 * p / 3), p)),
+  splitrule = splitrule,
+  min.node.size = min.node.size)
+
+grid_glmnet_lam <- function(lam_max) expand.grid(
+  alpha = c(0, 0.25, 0.5, 0.75, 1),
+  lambda = lam_max * 10 ^ seq(0, -3, length.out = 15))
+
+grid_svm_sig <- function(sig) expand.grid(
+  sigma = as.numeric(sig),
+  C = c(0.1, 1, 10, 100))
+
+# Rango de sigma del kernel radial para un data.frame (one-hot de los factores,
+# filtro de colinealidad con cutoff 0.9, escalado y sigest).
+estimar_sigma <- function(df, formula = SJL ~ .) {
+  Xn <- caret::dummyVars(formula, data = df, fullRank = TRUE) |> predict(newdata = df)
+  ac <- caret::findCorrelation(cor(Xn), cutoff = 0.9)
+  if (length(ac) > 0) Xn <- Xn[, -ac]
+  set.seed(0)
+  kernlab::sigest(scale(Xn))
+}
+```
+
+## 3.2 Random Forest
+
+Random Forest [8] entrena un conjunto de árboles de regresión sobre muestras bootstrap del train, eligiendo en cada nodo un subconjunto aleatorio de `mtry` predictores. La predicción es la media de los árboles.
+
+Se usa la implementación `ranger` [9] en lugar del `randomForest` clásico. Ambas ejecutan el mismo algoritmo y producen un bosque estadísticamente equivalente, pero `ranger` está implementada en C++ y, sobre todo, paraleliza de forma nativa: como cada árbol se construye de forma independiente, los reparte entre todos los núcleos de la CPU, mientras que `randomForest` los entrena de uno en uno. A eso se suman estructuras de datos más eficientes en memoria, pensadas para conjuntos con muchos predictores. El resultado es un entrenamiento más rápido.
+
+Hiperparámetros a ajustar:
+
+- `mtry`: número de predictores candidatos evaluados al azar en cada split. La regla por defecto depende de la tarea: en clasificación se toma √p y en regresión p/3, bastante mayor [10]. Los propios autores advierten de que ese valor es solo un punto de partida y que `mtry` conviene tratarlo como hiperparámetro a ajustar, no fijarlo (en su ejemplo el óptimo queda por encima del default). Con los `r ncol(df_train) - 1` predictores eso son √p ≈ 12 frente a p/3 ≈ 50. Por eso el grid no se ancla en un único valor: recorre fracciones crecientes de p, desde √p (≈ 12) hasta p (es decir, bagging, sin submuestreo de variables), pasando por p/5, p/3, p/2 y 2p/3, y dejando que la validación cruzada elija el óptimo, que con tantos predictores tiende a caer en valores altos de mtry.
+- `splitrule`: criterio con el que se elige el corte en cada nodo. En regresión, el estándar y valor por defecto de `ranger` es `"variance"` (escoge el corte que más reduce la varianza intra-nodo). 
+- `min.node.size`: número mínimo de observaciones en un nodo terminal; regula la profundidad del árbol. Valores bajos dan árboles profundos (más varianza, riesgo de sobreajuste); valores altos los regularizan. El mínimo recomendado en regresión es 5 [10], que además es el valor por defecto de `ranger`; el grid parte de ahí y explora hacia arriba (5, 10, 20).
+
+```{r rf-grid}
+p_train <- ncol(df_train) - 1 # número de predictores (sin SJL)
+grid_rf <- grid_rf_p(p_train)
+estilo_kable(grid_rf, caption = "Tabla 11 · Grid de búsqueda de hiperparámetros del Random Forest de regresión (mtry, splitrule y min.node.size).")
+```
+
+```{r rf-train, eval = FALSE}
+set.seed(0)
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+fit_rf <- caret::train(
+  SJL ~ .,
+  data = df_train,
+  method = "ranger",
+  tuneGrid = grid_rf,
+  trControl = ctrl_reg,
+  metric = "RMSE",
+  num.trees = 500,
+  num.threads = 1,
+  importance = "impurity"
+)
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+
+saveRDS(fit_rf, file.path(MODELS_DIR, "fit_rf.rds"))
+```
+
+```{r rf-load}
+fit_rf <- leer_cache("fit_rf", "rf-train")
+```
+
+## 3.3 SVM con kernel radial
+
+SVM (máquina de vectores de soporte) [11] construye una función de regresión en el espacio mapeado por un kernel (aquí el radial / Gaussiano), que captura no linealidades suaves. SVM no presupone forma de la relación entre predictores y respuesta, lo que la hace flexible, pero requiere predictores centrados y escalados (sensibilidad a la escala vía la distancia euclídea del kernel). Se entrena con la implementación de `kernlab` [12].
+
+Hiperparámetros:
+
+- `sigma`: anchura del kernel radial. Controla cómo de "local" es el modelo. Se estima un rango razonable con `kernlab::sigest`, que devuelve los percentiles 10, 50 y 90 de la inversa de la distancia cuadrática entre pares de puntos.
+- `C`: coste de error (regularización). Valores altos estrechan el margen y tienden al sobreajuste, mientras que valores bajos lo amplían y tienden al subajuste. Se ajusta en un grid logarítmico (0.1, 1, 10, 100), porque el efecto de `C` es de escala y la búsqueda convencional se hace por órdenes de magnitud. Cuatro potencias de 10 cubren de mucha a poca regularización.
+
+```{r svm-grid}
+# Estimación del rango de sigma con sigest sobre el train numérico, en tres pasos:
+# (1) dummyVars + predict: convierte los factores en columnas 0/1 (one-hot) para
+#     tener una matriz solo numérica, ya que sigest no admite factores;
+# (2) findCorrelation: descarta las variables muy correlacionadas (mismo filtro
+#     "corr", cutoff 0.9, que train() aplica por fold), de modo que sigma se
+#     estima sobre el mismo espacio de variables que verá el modelo;
+# (3) scale: centra y escala, porque el kernel radial usa distancias euclídeas.
+sig_range <- estimar_sigma(df_train)
+cat(sprintf("Sigma estimado por sigest (P10, P50, P90): %.2e, %.2e, %.2e\n",
+            sig_range[1], sig_range[2], sig_range[3]))
+
+grid_svm <- grid_svm_sig(sig_range)
+grid_svm |>
+  dplyr::mutate(sigma = formatC(sigma, format = "e", digits = 2)) |>
+  estilo_kable(caption = "Tabla 12 · Grid de búsqueda del SVM radial de regresión (sigma, estimado por sigest, y C).")
+```
+
+```{r svm-train, eval = FALSE}
+set.seed(0)
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+fit_svm <- caret::train(
+  SJL ~ .,
+  data = df_train,
+  method = "svmRadial",
+  tuneGrid = grid_svm,
+  trControl = ctrl_reg,
+  metric = "RMSE",
+  preProcess = c("corr", "center", "scale")
+)
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+
+saveRDS(fit_svm, file.path(MODELS_DIR, "fit_svm.rds"))
+```
+
+```{r svm-load}
+fit_svm <- leer_cache("fit_svm", "svm-train")
+```
+
+## 3.4 Elastic Net
+
+Elastic Net [13] es una regresión lineal regularizada que combina las penalizaciones L1 (lasso, selección automática) y L2 (ridge, encogimiento), implementada con `glmnet` [14]. Sirve como baseline lineal interpretable: si los modelos no lineales (RF, SVM) no superan claramente a Elastic Net, significaría que la estructura del problema es más bien lineal y que las interacciones aportan menos de lo previsto.
+
+Hiperparámetros:
+
+- `alpha` ∈ [0, 1]: mezcla entre L1 (α = 1, lasso puro) y L2 (α = 0, ridge puro). 
+- `lambda`: fuerza de la penalización. El grid se ancla en el `lambda.max` que calcula `glmnet` (valor que anula todos los coeficientes para estos datos) y baja tres órdenes de magnitud en escala logarítmica: así el rango está determinado por los datos (cubre de penalización casi nula a total). Se fija explícito, en lugar de dejar que `glmnet` genere una secuencia distinta por fold, para que todos los folds evalúen los mismos `lambda` y la validación cruzada sea comparable y reproducible.
+
+```{r glmnet-grid}
+X_glmnet <- model.matrix(SJL ~ ., data = df_train)[, -1]
+lam_max <- max(glmnet::glmnet(X_glmnet, df_train$SJL, alpha = 1)$lambda)
+grid_glmnet <- grid_glmnet_lam(lam_max)
+nrow(grid_glmnet) # 75 combinaciones
+```
+
+```{r glmnet-train, eval = FALSE}
+set.seed(0)
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+fit_glmnet <- caret::train(
+  SJL ~ .,
+  data = df_train,
+  method = "glmnet",
+  tuneGrid = grid_glmnet,
+  trControl = ctrl_reg,
+  metric = "RMSE",
+  preProcess = c("corr", "center", "scale")
+)
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+
+saveRDS(fit_glmnet, file.path(MODELS_DIR, "fit_glmnet.rds"))
+```
+
+```{r glmnet-load}
+fit_glmnet <- leer_cache("fit_glmnet", "glmnet-train")
+```
+
+## 3.5 XGBoost
+
+Random Forest y XGBoost son ambos ensembles de árboles, pero construyen el conjunto de forma opuesta. Random Forest hace *bagging*: entrena muchos árboles independientes en paralelo sobre muestras bootstrap y promedia; cada árbol es profundo y el promediado reduce la varianza. XGBoost [15] hace *boosting*: entrena los árboles en secuencia, y cada nuevo árbol se ajusta a los errores residuales del conjunto acumulado hasta ese momento; cada árbol es poco profundo (un *weak learner*) y la suma progresiva reduce el sesgo. Es el algoritmo de referencia para datos tabulares y el que se suele citar como *state-of-the-art* en competiciones, así que sirve para comprobar si un modelo más sofisticado exprime señal que RF y SVM dejan sin capturar.
+
+Se usa la interfaz `xgbTree` de caret, que envuelve el paquete `xgboost`.
+
+Hiperparámetros a ajustar:
+
+- `nrounds`: número de árboles (rondas de boosting). Como cada árbol corrige al anterior, más rondas reducen el error de entrenamiento pero pueden sobreajustar; se equilibra con `eta`.
+- `max_depth`: profundidad de cada árbol. En boosting se usan árboles poco profundos; la complejidad se consigue sumando muchos, no haciéndolos profundos. 
+- `eta`: tasa de aprendizaje (*shrinkage*). Encoge la contribución de cada árbol; valores bajos (0.03) aprenden despacio pero generalizan mejor, a costa de necesitar más `nrounds`.
+- `min_child_weight`: peso mínimo de observaciones en un nodo hijo para permitir un split; regulariza (análogo al `min.node.size` del RF).
+
+Los tres restantes se fijan en valores estándar en vez de ajustarlos, porque son frenos de complejidad que se solapan con los anteriores y meterlos en el grid lo dispararía sin apenas mover el óptimo:
+
+- `gamma` = 0: reducción de pérdida mínima que un split debe aportar para aceptarse, es decir, la ganancia del corte (en boosting la ganancia de un split se define como cuánto baja la función de pérdida al hacerlo). Funciona como un umbral de poda: descarta los cortes poco informativos (cuanto mayor, más conservador es el árbol). Se deja en 0 porque la complejidad ya la controlan `max_depth` y `min_child_weight`.
+- `colsample_bytree` = 0.8: fracción de columnas (variables) muestreadas al azar para construir cada árbol. Es el análogo del `mtry` del RF.
+- `subsample` = 0.8: fracción de filas (observaciones) muestreadas al azar en cada ronda de boosting. Es el análogo del bootstrap del RF.
+
+`colsample_bytree` y `subsample` introducen aleatoriedad por columnas y por filas, lo que decorrela los árboles del ensemble y reduce el sobreajuste; 0.8 (usar el 80 % cada vez) es el valor habitual. La regularización L1/L2 sobre los pesos de las hojas (`alpha` y `lambda`) se queda en sus valores por defecto: la interfaz `xgbTree` de caret no la expone, solo permite ajustar estos 7 parámetros.
+
+```{r xgb-grid}
+grid_xgb <- expand.grid(
+  nrounds = c(300, 500, 800, 1200),
+  max_depth = c(2, 4, 6, 8, 10),
+  eta = c(0.03, 0.1),
+  gamma = 0,
+  colsample_bytree = 0.8,
+  min_child_weight = c(1, 5),
+  subsample = 0.8
+)
+nrow(grid_xgb) # 80 combinaciones
+```
+
+```{r xgb-train, eval = FALSE}
+set.seed(0)
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+fit_xgb <- caret::train(
+  SJL ~ .,
+  data = df_train,
+  method = "xgbTree",
+  tuneGrid = grid_xgb,
+  trControl = ctrl_reg,
+  metric = "RMSE",
+  verbosity = 0,
+  nthread = 1
+)
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+
+saveRDS(fit_xgb, file.path(MODELS_DIR, "fit_xgb.rds"))
+```
+
+```{r xgb-load}
+fit_xgb <- leer_cache("fit_xgb", "xgb-train")
+```
+
+## 3.6 Comparación de los cuatro modelos
+
+Una vez entrenados los cuatro modelos, esta sección los compara. Primero se reúnen en una tabla la configuración óptima y el rendimiento en validación cruzada de cada uno, se examina la distribución del error entre folds y se aplica un contraste estadístico que determina si las diferencias son reales. Después se analiza el perfil de ajuste de cada modelo por separado. 
+
+```{r comparacion-cv}
+resamples_reg <- caret::resamples(list(
+  RF = fit_rf,
+  SVM = fit_svm,
+  ElasticNet = fit_glmnet,
+  XGBoost = fit_xgb
+))
+```
+
+```{r comparacion-tabla}
+# Tabla combinada: hiperparámetros óptimos + métricas de CV de los cuatro modelos.
+# getTrainPerf() da la media en los 15 folds para la mejor combinación de cada uno.
+fila_modelo <- function(fit, nombre, hp) {
+  p <- caret::getTrainPerf(fit)
+  tibble(Modelo = nombre, `Hiperparámetros óptimos` = hp,
+         `RMSE (CV)` = round(p$TrainRMSE, 4),
+         `MAE (CV)` = round(p$TrainMAE, 4),
+         `R² (CV)` = round(p$TrainRsquared, 4))
+}
+
+bind_rows(
+  fila_modelo(fit_rf, "Random Forest",
+              sprintf("mtry=%d, min.node.size=%d",
+                      fit_rf$bestTune$mtry, fit_rf$bestTune$min.node.size)),
+  fila_modelo(fit_svm, "SVM radial",
+              sprintf("sigma=%.2e, C=%g",
+                      fit_svm$bestTune$sigma, fit_svm$bestTune$C)),
+  fila_modelo(fit_glmnet, "Elastic Net",
+              sprintf("alpha=%.2f, lambda=%.4f",
+                      fit_glmnet$bestTune$alpha, fit_glmnet$bestTune$lambda)),
+  fila_modelo(fit_xgb, "XGBoost",
+              sprintf("nrounds=%d, max_depth=%d, eta=%.2f, min_child=%d",
+                      fit_xgb$bestTune$nrounds, fit_xgb$bestTune$max_depth,
+                      fit_xgb$bestTune$eta, fit_xgb$bestTune$min_child_weight))
+) |>
+  arrange(`RMSE (CV)`) |>
+  estilo_kable(caption = "Tabla 13 · Configuración óptima y rendimiento en validación cruzada (5×3) de los cuatro modelos baseline. Ordenados por RMSE creciente.")
+```
+
+```{r comparacion-cv-plot, fig.width = 9, fig.height = 4.5, fig.cap = "Figura 7 · Distribución del RMSE en los 15 folds (5×3) por modelo; se grafica solo el RMSE por ser el criterio de selección. La caja representa el rango intercuartílico (Q1-Q3) y el punto central la mediana."}
+bwplot(resamples_reg, metric = "RMSE",
+       main = "Distribución del RMSE por fold (5-fold CV × 3 repeticiones)")
+```
+
+Los cuatro modelos quedan muy juntos, como se aprecia en la Tabla 13 y en el solapamiento parcial de las cajas de la Figura 7. El RMSE de CV va de 0.6650 (XGBoost) a 0.6997 (Elastic Net), una diferencia de apenas 0.035 h ≈ 2 min, y el R² de 0.4528 a 0.3978. El orden (XGBoost > SVM radial > Random Forest > Elastic Net) da una ligera ventaja a los modelos no lineales, pero el margen es pequeño, ya que el baseline lineal (Elastic Net) queda a solo ≈ 0.055 de R² del mejor, lo que indica que la relación es predominantemente lineal y aditiva y que las interacciones y no linealidades aportan poco en este problema. El R² ≈ 0.40-0.45 marca el techo de rendimiento, pues en torno a la mitad de la varianza del SJL es individual e irreducible desde la actigrafía. En la escala clínica, el mejor modelo se equivoca de media en ≈ 29 min (MAE 0.4890 h). Que esas diferencias sean pequeñas no implica que se deban al azar, distinción de la que se ocupa el contraste pareado que sigue.
+
+```{r comparacion-cv-diff}
+diff_reg <- diff(resamples_reg)
+summary(diff_reg)
+```
+
+La salida ofrece una matriz por métrica (MAE, RMSE y R²) que se lee en dos mitades. Por encima de la diagonal figura la diferencia media entre el modelo de la fila y el de la columna, y por debajo, el p-valor que contrasta si esa diferencia es nula. El ajuste de Bonferroni que `caret` aplica por defecto es pertinente aquí, ya que con cuatro modelos se realizan seis comparaciones por pares y, sin corrección, la probabilidad de un falso positivo se inflaría. Atendiendo al RMSE, que es el criterio de selección, XGBoost resulta significativamente mejor que los otros tres (p ≈ 4·10⁻⁶ frente a Random Forest, 0.023 frente a SVM y 0.004 frente a Elastic Net), mientras que Random Forest, SVM y Elastic Net no se distinguen entre sí (p > 0.13). En MAE el panorama cambia y aparecen más diferencias significativas. Se forman dos grupos, uno con XGBoost y SVM por delante y otro con Random Forest y Elastic Net por detrás, que no se distinguen dentro de cada grupo pero difieren entre sí de forma muy significativa. Así, SVM, que en RMSE era indistinguible de Random Forest, en MAE iguala a XGBoost y supera con claridad a Random Forest y Elastic Net. En R² se recupera el patrón del RMSE, con XGBoost por delante de los tres; la única diferencia añadida significativa es la del SVM sobre la Elastic Net (p ≈ 0.05), mientras que el Random Forest ya no se separa ni del SVM ni de la Elastic Net. La conclusión es que XGBoost es el modelo más sólido, ya que nunca queda significativamente por detrás y encabeza las tres métricas, en solitario en RMSE y R² y empatado con SVM en MAE. La ventaja es modesta en magnitud (una o dos centésimas de hora) pero estadísticamente consistente, porque el contraste es pareado y compara los modelos fold a fold. 
+ 
+### Perfiles de ajuste de hiperparámetros
+
+Cada gráfica muestra cómo varía el RMSE de CV al recorrer el grid de hiperparámetros de un modelo. 
+
+```{r rf-tuning-plot, fig.width = 9, fig.height = 4.5, fig.cap = "Figura 8 · Perfil de ajuste del Random Forest. RMSE (CV) en función de mtry, una curva por min.node.size. El círculo rojo marca la combinación seleccionada."}
+fit_rf$results |>
+  mutate(min.node.size = factor(min.node.size)) |>
+  ggplot(aes(x = mtry, y = RMSE, color = min.node.size,
+             group = min.node.size)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.2) +
+  geom_point(data = ~ filter(.x, mtry == fit_rf$bestTune$mtry,
+                              min.node.size == fit_rf$bestTune$min.node.size),
+             color = ACCENT, size = 4, shape = 21, stroke = 1.5, fill = NA) +
+  scale_color_manual(values = PAL_QUAL[1:length(unique(fit_rf$results$min.node.size))]) +
+  labs(x = "mtry", y = "RMSE (CV)",
+       color = "min.node.size",
+       title = "Ajuste de hiperparámetros del Random Forest")
+```
+
+**Random Forest** (`mtry=99`, `min.node.size=5`). La Figura 8 muestra que el RMSE cae rápido al aumentar `mtry` desde √p (≈ 12) y se aplana a partir de p/3 (= 50). Los valores 50, 74 y 99 quedan prácticamente empatados (RMSE entre 0.6834 y 0.6837), con diferencias por debajo de la variabilidad entre folds, mientras que llegar a p (bagging, los 149 predictores) ya no mejora e incluso empeora algo (RMSE 0.6856). Así, el `mtry=99` seleccionado (RMSE 0.6834) no es un óptimo marcado sino un punto dentro de esa meseta, coherente con la heurística de regresión (p/3 o por encima) y con que el submuestreo de variables aún aporte algo frente al bagging completo. El `min.node.size` apenas influye, pues las tres curvas casi se solapan, y se queda en 5, el mínimo recomendado y valor por defecto de `ranger`.
+
+```{r svm-tuning-plot, fig.width = 9, fig.height = 4.5, fig.cap = "Figura 9 · Perfil de ajuste del SVM radial. RMSE (CV) en función de C en escala logarítmica, una curva por valor de sigma. El círculo rojo marca la combinación seleccionada."}
+fit_svm$results |>
+  mutate(sigma_lab = formatC(sigma, format = "e", digits = 1)) |>
+  ggplot(aes(x = C, y = RMSE, color = sigma_lab, group = sigma_lab)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.2) +
+  geom_point(data = ~ filter(.x, C == fit_svm$bestTune$C,
+                              sigma == fit_svm$bestTune$sigma),
+             color = ACCENT, size = 4, shape = 21, stroke = 1.5, fill = NA) +
+  scale_x_log10() +
+  scale_color_manual(values = PAL_QUAL[1:length(unique(fit_svm$results$sigma))]) +
+  labs(x = "C (escala log)", y = "RMSE (CV)",
+       color = "sigma",
+       title = "Ajuste de hiperparámetros del SVM radial")
+```
+
+**SVM radial** (`sigma=5.32e-03`, `C=1`). La Figura 9 dibuja una U clara en `C`. Con `C=0.1` el modelo subajusta (margen demasiado blando, RMSE ≈ 0.74) y con `C=100` sobreajusta, porque penaliza tanto los errores que se ajusta al ruido (RMSE ≈ 0.70-0.78). El mínimo cae en `C=1` (RMSE 0.6779), un punto interior del grid.
+
+```{r glmnet-tuning-plot, fig.width = 9, fig.height = 4.5, fig.cap = "Figura 10 · Perfil de ajuste del Elastic Net. RMSE (CV) en función de lambda en escala logarítmica, una curva por alpha. El círculo rojo marca la combinación seleccionada."}
+fit_glmnet$results |>
+  mutate(alpha = factor(alpha)) |>
+  ggplot(aes(x = lambda, y = RMSE, color = alpha, group = alpha)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.6) +
+  geom_point(data = ~ filter(.x, lambda == fit_glmnet$bestTune$lambda,
+                              alpha == as.character(fit_glmnet$bestTune$alpha)),
+             color = ACCENT, size = 4, shape = 21, stroke = 1.5, fill = NA) +
+  scale_x_log10() +
+  scale_color_manual(values = PAL_QUAL[1:length(unique(fit_glmnet$results$alpha))]) +
+  labs(x = "lambda (escala log)", y = "RMSE (CV)", color = "alpha",
+       title = "Ajuste de hiperparámetros del Elastic Net")
+```
+
+**Elastic Net** (`alpha=1`, `lambda=0.0135`). En la Figura 10 el parámetro que gobierna el resultado es `lambda`. Cada curva se mantiene baja a la izquierda y se dispara a la derecha cuando la penalización vacía el modelo hacia el intercepto, de modo que para `alpha=1` el RMSE pasa de 0.6997 a ≈ 0.90. El `alpha` apenas separa las curvas (el mejor RMSE solo mejora una centésima del ridge al lasso), así que la validación cruzada se queda con el lasso puro (`alpha=1`) por un margen mínimo. El `lambda=0.0135` elegido es pequeño e interior al grid, lo suficiente para encoger los coeficientes sin vaciar el modelo. 
+
+```{r xgb-tuning-plot, fig.width = 9, fig.height = 4.5, fig.cap = "Figura 11 · Perfil de ajuste del XGBoost. RMSE (CV) en función de la profundidad del árbol (max_depth), una curva por tasa de aprendizaje (eta) y tipo de línea por min_child_weight; un panel por número de rondas (nrounds). El círculo rojo marca la combinación seleccionada."}
+fit_xgb$results |>
+  mutate(eta = factor(eta), min_child_weight = factor(min_child_weight),
+         nrounds_lab = factor(paste("nrounds =", nrounds),
+                              levels = paste("nrounds =", sort(unique(nrounds))))) |>
+  ggplot(aes(x = max_depth, y = RMSE, color = eta,
+             group = interaction(eta, min_child_weight),
+             linetype = min_child_weight)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.2) +
+  geom_point(data = ~ filter(.x,
+                             max_depth == fit_xgb$bestTune$max_depth,
+                             nrounds == fit_xgb$bestTune$nrounds,
+                             as.character(eta) == as.character(fit_xgb$bestTune$eta),
+                             as.character(min_child_weight) == as.character(fit_xgb$bestTune$min_child_weight)),
+             color = ACCENT, size = 4, shape = 21, stroke = 1.5, fill = NA) +
+  facet_wrap(~ nrounds_lab) +
+  scale_color_manual(values = PAL_QUAL[1:2]) +
+  labs(x = "max_depth", y = "RMSE (CV)", color = "eta", linetype = "min_child_weight",
+       title = "Ajuste de hiperparámetros del XGBoost")
+```
+
+**XGBoost** (`nrounds=800`, `max_depth=6`, `eta=0.03`, `min_child_weight=1`). La Figura 11 traza una U en `max_depth`. Los árboles muy poco profundos subajustan (`max_depth=2`, RMSE ≈ 0.685) y los muy profundos sobreajustan (`max_depth=10`, ≈ 0.671), y el mínimo está en 6 (RMSE 0.6650), un óptimo interior. La tasa de aprendizaje baja (`eta=0.03`) bate a la alta (`eta=0.10`, ≈ 0.678) apoyándose en muchas rondas, el régimen clásico del boosting, aprender despacio sumando muchos árboles débiles. El `min_child_weight` apenas mueve el perfil y se queda en 1, dejando crecer las hojas porque la regularización ya la aportan `eta` y el submuestreo. El óptimo de `nrounds` (800) queda en el interior del grid, que se extiende hasta 1200. Para la `eta` ganadora (0.03) el RMSE ya está casi plano al acercarse a 800 (entre 500 y 800 rondas cambia menos de 0.001, por debajo de la variabilidad entre folds), y añadir más rondas hasta 1200 no aporta mejora, lo que confirma que 800 basta.
+
+## 3.7 Evaluación en test 
+
+Sobre el conjunto de test reservado al inicio se obtiene la evaluación final de cada modelo. 
+
+```{r evaluacion-test}
+modelos_reg <- list("Random Forest" = fit_rf, "SVM radial" = fit_svm,
+                    "Elastic Net" = fit_glmnet, "XGBoost" = fit_xgb)
+
+pred_test <- function(fit, df) {
+  m <- caret::postResample(predict(fit, newdata = df), df$SJL)
+  tibble(RMSE = m[["RMSE"]], MAE = m[["MAE"]], `R²` = m[["Rsquared"]])
+}
+
+tabla_test <- purrr::imap_dfr(modelos_reg, ~ pred_test(.x, df_test) |> mutate(Modelo = .y)) |>
+  select(Modelo, everything()) |>
+  mutate(`MAE (min)` = round(MAE * 60, 1)) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
+  arrange(RMSE)
+
+estilo_kable(tabla_test,
+             caption = sprintf("Tabla 14 · Rendimiento final en el conjunto de test (n = %d sujetos no vistos durante el entrenamiento).",
+                               nrow(df_test)))
+```
+
+Sobre el conjunto de test, no visto durante el entrenamiento, el orden reproduce el de la validación cruzada. XGBoost vuelve a ser el mejor, con un RMSE de 0.7212 y un R² de 0.4875. Ese R² cercano a 0.49 significa que el modelo explica casi la mitad de la variabilidad del SJL en sujetos nuevos, con un error absoluto medio de unos 30 min. Los cuatro siguen muy próximos, con el RMSE entre 0.72 y 0.75, lo que confirma sobre datos externos lo que ya apuntaba la validación cruzada, que la señal disponible fija un techo común. Además, el rendimiento en test queda del mismo orden que en CV, señal de que no hay sobreajuste apreciable y de que la estimación interna era fiable.
+
+El acuerdo punto a punto entre lo predicho y lo observado se ve mejor en un gráfico.
+
+```{r pred-obs-reg, fig.width = 12.5, fig.height = 5.2, fig.align = "center", fig.cap = "Figura 11b · Figura combinada para el cuerpo de la memoria. (a) Scree plot del PCA exploratorio. (b) Predicho frente a observado en test para el XGBoost de regresión."}
+n_eval <- min(20, length(prop_exp))
+codo_pc <- inflection::uik(seq_len(n_eval), prop_exp[seq_len(n_eval)])
+scree_df <- tibble(PC = seq_len(n_eval), Prop = prop_exp[seq_len(n_eval)],
+                   Cum = cum_exp[seq_len(n_eval)])
+p_scree <- ggplot(scree_df, aes(x = PC)) +
+  geom_col(aes(y = Prop), fill = HEADER, alpha = 0.85, width = 0.7) +
+  geom_line(aes(y = Cum), color = ACCENT, linewidth = 0.9, linetype = "dashed") +
+  geom_point(aes(y = Cum), color = ACCENT, size = 1.9) +
+  geom_text(aes(y = Cum, label = sprintf("%.0f%%", Cum)),
+            color = ACCENT, size = 2.4, vjust = -0.7) +
+  geom_vline(xintercept = codo_pc, color = "grey40", linetype = "dotted") +
+  annotate("text", x = codo_pc + 0.3, y = max(scree_df$Prop) * 0.9,
+           label = sprintf("Codo (Kneedle):\nPC %d", codo_pc),
+           hjust = 0, color = "grey30", size = 3.0) +
+  scale_x_continuous(breaks = seq(1, n_eval, by = 2)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(x = "Componente principal", y = "Varianza explicada (%)") +
+  theme_tfm(12)
+
+dat_po <- purrr::imap_dfr(modelos_reg, ~ tibble(
+  Modelo = .y, obs = df_test$SJL, pred = predict(.x, newdata = df_test))) |>
+  dplyr::filter(Modelo == "XGBoost")
+met_po <- dat_po |>
+  summarise(R2 = caret::postResample(pred, obs)[["Rsquared"]],
+            MAE = caret::postResample(pred, obs)[["MAE"]]) |>
+  mutate(etq = sprintf("R² = %.4f\nMAE = %.4f h", R2, MAE))
+lim_po <- range(c(dat_po$obs, dat_po$pred))
+met_po <- met_po |> mutate(x = lim_po[1], y = lim_po[2])
+diag_po <- data.frame(x = lim_po, y = lim_po)
+umb_po  <- data.frame(xint = UMBRAL_CLINICO)
+lab_diag <- "Predicción perfecta"
+lab_tend <- "Tendencia (ajuste lineal)"
+lab_umb  <- "Umbral clínico (2 h)"
+ord_leg  <- c(lab_diag, lab_tend, lab_umb)
+
+p_predobs <- ggplot(dat_po, aes(obs, pred)) +
+  geom_point(alpha = 0.22, color = HEADER, size = 1.0) +
+  geom_vline(data = umb_po, aes(xintercept = xint, color = lab_umb, linetype = lab_umb),
+             linewidth = 0.5) +
+  geom_line(data = diag_po, aes(x, y, color = lab_diag, linetype = lab_diag),
+            linewidth = 0.6, inherit.aes = FALSE) +
+  geom_smooth(aes(color = lab_tend, linetype = lab_tend),
+              method = "lm", formula = y ~ x, se = FALSE, linewidth = 0.8) +
+  geom_text(data = met_po, aes(x = x, y = y, label = etq), inherit.aes = FALSE,
+            hjust = 0, vjust = 1, size = 3.3, color = HEADER, lineheight = 0.95) +
+  coord_equal(xlim = lim_po, ylim = lim_po) +
+  scale_color_manual(name = NULL, breaks = ord_leg,
+    values = setNames(c(ACCENT, PAL_QUAL[3], "grey45"), ord_leg)) +
+  scale_linetype_manual(name = NULL, breaks = ord_leg,
+    values = setNames(c("dashed", "solid", "longdash"), ord_leg)) +
+  labs(x = "SJL observado (h)", y = "SJL predicho (h)") +
+  theme_tfm(12) +
+  theme(legend.position = "bottom")
+
+(p_scree | p_predobs) +
+  plot_layout(widths = c(1.25, 1), guides = "collect") +
+  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
+    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 13))) &
+  theme(legend.position = "bottom")
+```
+
+Por último, conviene saber cuánta confianza merece la estimación de test, que se calcula sobre una sola partición. Un bootstrap no paramétrico (2000 remuestreos de los 536 sujetos, sin reentrenar nada) acota esa incertidumbre con un intervalo de confianza al 95 %.
+
+```{r boot-reg}
+set.seed(0)
+obs_reg_b  <- df_test$SJL
+pred_reg_b <- predict(fit_xgb, newdata = df_test)
+metricas_reg_b <- function(o, p) c(
+  `R²` = cor(o, p)^2, RMSE = sqrt(mean((o - p)^2)), MAE = mean(abs(o - p)))
+
+n_reg_b <- length(obs_reg_b)
+bs_reg <- t(replicate(2000, {
+  i <- sample.int(n_reg_b, n_reg_b, replace = TRUE)
+  metricas_reg_b(obs_reg_b[i], pred_reg_b[i])
+}))
+pe_reg <- metricas_reg_b(obs_reg_b, pred_reg_b)
+
+tibble(
+  Métrica = names(pe_reg),
+  Estimación = round(pe_reg, 4),
+  `IC 95 % (inf.)` = round(apply(bs_reg, 2, quantile, 0.025), 4),
+  `IC 95 % (sup.)` = round(apply(bs_reg, 2, quantile, 0.975), 4)
+) |>
+  estilo_kable(caption = "Tabla 14b · Intervalos de confianza al 95 % (bootstrap, 2000 remuestreos) de las métricas del XGBoost en el conjunto de test (n = 536).")
+```
+
+El R² obtenido en validación cruzada cae dentro de este intervalo, lo que confirma que el resultado del test no depende del azar de la partición y que no hay sobreajuste apreciable.
+
+---
+
+# 4 · Modelos de clasificación binaria
+
+La tarea de regresión modela el SJL en su escala continua. La tarea de clasificación binaria complementa esa lectura con una pregunta orientada a decisión clínica: *dado un sujeto, ¿está en riesgo de SJL clínicamente relevante (≥ 2 h)?* 
+
+Se utilizan los mismos algoritmos del bloque anterior, en su variante clasificatoria (Random Forest, SVM radial, logística regularizada en lugar del Elastic Net, y XGBoost) y con la configuración adaptada al desbalance moderado de la clase positiva.
+
+## 4.1 Validación cruzada y métricas
+
+Sobre el train (mismo `idx_train` que en regresión) se aplica 5-fold CV repetida 3 veces, idéntica al esquema de validación cruzada de la regresión para que las muestras de validación sean comparables. Tres diferencias con el `ctrl_reg`:
+
+- `classProbs = TRUE`: necesario para que los modelos calculen probabilidades.
+- `summaryFunction = multiClassSummary`: devuelve Balanced Accuracy, F1, Kappa, AUC, Sensitivity y Specificity. La métrica con la que `train` seleccionará los hiperparámetros es la Balanced Accuracy (`metric = "Balanced_Accuracy"`). 
+- `sampling = "up"`: aplica *upsampling* de la clase minoritaria (`Alto`) dentro de cada fold de entrenamiento, no antes. Así el modelo aprende sobre clases balanceadas pero la validación se hace sobre la distribución real de la cohorte, evitando fuga de información y sobre-optimismo.
+
+Lo que dimensiona esta tarea no es la N total sino el tamaño de la clase positiva, que la Tabla 10 reparte de forma proporcional entre train y test. El *upsampling* equilibra las clases solo dentro de cada fold, mientras que la selección por Balanced Accuracy y la evaluación final se miden sobre esa proporción real, así que el desequilibrio no infla el rendimiento.
+
+```{r ctrl-clasif}
+ctrl_clf <- caret::trainControl(
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3,
+  seeds = hacer_semillas(),
+  classProbs = TRUE,
+  summaryFunction = caret::multiClassSummary,
+  sampling = "up",
+  savePredictions = "final",
+  returnResamp = "all",
+  verboseIter = FALSE,
+  preProcOptions = list(cutoff = 0.9),
+  allowParallel = TRUE
+)
+```
+
+### Métricas reportadas en clasificación
+
+Se definen aquí todas las métricas que calcula `multiClassSummary`.
+
+| Métrica | Definición | Papel |
+|---|---|---|
+| Balanced Accuracy | (Sensitivity + Specificity) / 2 | Métrica de selección: corrige el desbalance |
+| Accuracy | (TP + TN) / N | Proporción global de aciertos; con clases desbalanceadas premia a la clase mayoritaria, por eso la selección usa la Balanced Accuracy y no esta |
+| AUC | Área bajo la curva ROC | Discriminación independiente del umbral; sostiene la comparación de capacidad entre modelos |
+| prAUC | Área bajo la curva precisión-recall | Discriminación centrada en la clase positiva; más exigente que el AUC cuando la clase es rara |
+| Sensitivity / Recall | TP / (TP + FN) | Proporción de casos con SJL alto detectados |
+| Specificity | TN / (TN + FP) | Proporción de casos con SJL bajo correctamente clasificados |
+| PPV / Precision | TP / (TP + FP) | Fiabilidad de un positivo |
+| NPV | TN / (TN + FN) | Fiabilidad de un negativo |
+| F1 | Media armónica de PPV y sensibilidad | Resumen único de precisión/recall, útil cuando interesa la clase positiva |
+| Kappa de Cohen | Acuerdo observado corregido por azar | Métrica clásica, comparable entre estudios |
+| Detection Rate | TP / N | Fracción del total de sujetos correctamente clasificada como positivo |
+| logLoss | Pérdida logarítmica media de las probabilidades predichas | Calidad de las probabilidades; penaliza la confianza errónea |
+
+## 4.2 Random Forest 
+
+Mismo algoritmo que en regresión, pero ahora cada árbol vota una clase y la predicción agregada es por mayoría. Los hiperparámetros son los del Random Forest de regresión, con dos adaptaciones propias de la tarea:
+
+- `splitrule = "gini"`: el criterio de corte por defecto de `ranger` en clasificación, que escoge en cada nodo el split que más reduce la impureza de Gini (el análogo clasificatorio del `"variance"` de la regresión).
+- `min.node.size`: el valor por defecto de `ranger` en clasificación es 1, más bajo que el 5 de la regresión, así que el grid parte de ahí y sube a 5 y 10 para explorar algo más de regularización.
+
+El `mtry` recorre el mismo grid que en regresión, de √p hasta p.
+
+```{r rfclf-grid}
+p_train_clf <- ncol(df_train_clf) - 1
+
+grid_rf_clf <- grid_rf_p(p_train_clf, splitrule = "gini", min.node.size = c(1, 5, 10))
+estilo_kable(grid_rf_clf, caption = "Tabla 15 · Grid de búsqueda del Random Forest de clasificación (mtry, splitrule y min.node.size).")
+```
+
+```{r rfclf-train, eval = FALSE}
+set.seed(0)
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+fit_rf_clf <- caret::train(
+  Alto ~ .,
+  data = df_train_clf,
+  method = "ranger",
+  tuneGrid = grid_rf_clf,
+  trControl = ctrl_clf,
+  metric = "Balanced_Accuracy",
+  num.trees = 500,
+  num.threads = 1,
+  importance = "impurity"
+)
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+
+saveRDS(fit_rf_clf, file.path(MODELS_DIR, "fit_rf_clf.rds"))
+```
+
+```{r rfclf-load}
+fit_rf_clf <- leer_cache("fit_rf_clf", "rfclf-train")
+```
+
+## 4.3 SVM con kernel radial 
+
+Misma SVM radial que en regresión, con el mismo grid de `sigma` (reutilizado de `sigest`) y de `C`.
+
+```{r svmclf-grid}
+# sigma depende solo del espacio de predictores, que es el
+# mismo que en regresión: se reutiliza sig_range en lugar de recalcularla,
+# así el valor es reproducible y coincide con el de regresión.
+sig_range_clf <- sig_range
+
+grid_svm_clf <- expand.grid(
+  sigma = as.numeric(sig_range_clf),
+  C = c(0.1, 1, 10, 100)
+)
+grid_svm_clf |>
+  dplyr::mutate(sigma = formatC(sigma, format = "e", digits = 2)) |>
+  estilo_kable(caption = "Tabla 16 · Grid de búsqueda del SVM radial de clasificación (sigma, reutilizado del de regresión, y C).")
+```
+
+```{r svmclf-train, eval = FALSE}
+set.seed(0)
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+fit_svm_clf <- caret::train(
+  Alto ~ .,
+  data = df_train_clf,
+  method = "svmRadial",
+  tuneGrid = grid_svm_clf,
+  trControl = ctrl_clf,
+  metric = "Balanced_Accuracy",
+  preProcess = c("corr", "center", "scale")
+)
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+
+saveRDS(fit_svm_clf, file.path(MODELS_DIR, "fit_svm_clf.rds"))
+```
+
+```{r svmclf-load}
+fit_svm_clf <- leer_cache("fit_svm_clf", "svmclf-train")
+```
+
+## 4.4 Regresión logística regularizada 
+
+Análogo al Elastic Net de la regresión pero con `family = "binomial"`. El modelo subyacente es una logística regularizada con penalización Elastic Net. Sirve como baseline lineal interpretable, ya que cada predictor recibe un coeficiente con signo y magnitud, y la fuerza de la regularización determina cuántos sobreviven.
+
+```{r logitclf-grid}
+# lambda.max derivado de los datos (como en la regresión), ahora con
+# family = "binomial": el valor de lambda que anula todos los coeficientes.
+X_logit <- model.matrix(Alto ~ ., data = df_train_clf)[, -1]
+lam_max_logit <- max(glmnet::glmnet(X_logit, df_train_clf$Alto, alpha = 1,
+                                    family = "binomial")$lambda)
+grid_logit <- expand.grid(
+  alpha = c(0, 0.25, 0.5, 0.75, 1),
+  lambda = lam_max_logit * 10 ^ seq(0, -3, length.out = 15)  # de lambda.max a lambda.max/1000
+)
+nrow(grid_logit) # 75 combinaciones
+```
+
+```{r logitclf-train, eval = FALSE}
+set.seed(0)
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+fit_logit <- caret::train(
+  Alto ~ .,
+  data = df_train_clf,
+  method = "glmnet",
+  family = "binomial",
+  tuneGrid = grid_logit,
+  trControl = ctrl_clf,
+  metric = "Balanced_Accuracy",
+  preProcess = c("corr", "center", "scale")
+)
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+
+saveRDS(fit_logit, file.path(MODELS_DIR, "fit_logit.rds"))
+```
+
+```{r logitclf-load}
+fit_logit <- leer_cache("fit_logit", "logitclf-train")
+```
+
+## 4.5 XGBoost
+
+Mismo gradient boosting que en regresión, aquí en su variante de clasificación. Con una variable respuesta de tipo factor y `classProbs = TRUE`, caret cambia el objetivo interno a `binary:logistic` y devuelve la probabilidad de cada clase. Se reutiliza el mismo `grid_xgb` de la regresión.
+
+```{r xgbclf-grid}
+# Mismo grid que en regresión
+grid_xgb_clf <- grid_xgb
+nrow(grid_xgb_clf) # 80 combinaciones
+```
+
+```{r xgbclf-train, eval = FALSE}
+set.seed(0)
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+fit_xgb_clf <- caret::train(
+  Alto ~ .,
+  data = df_train_clf,
+  method = "xgbTree",
+  tuneGrid = grid_xgb_clf,
+  trControl = ctrl_clf,
+  metric = "Balanced_Accuracy",
+  verbosity = 0,
+  nthread = 1
+)
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+
+saveRDS(fit_xgb_clf, file.path(MODELS_DIR, "fit_xgb_clf.rds"))
+```
+
+```{r xgbclf-load}
+fit_xgb_clf <- leer_cache("fit_xgb_clf", "xgbclf-train")
+```
+
+## 4.6 Comparación de los cuatro clasificadores en CV
+
+```{r comparacion-clf-cv}
+resamples_clf <- caret::resamples(list(
+  RF = fit_rf_clf,
+  SVM = fit_svm_clf,
+  LogisticElastic = fit_logit,
+  XGBoost = fit_xgb_clf
+))
+
+# Tabla unificada
+fila_clf <- function(fit, nombre, hp) {
+  p <- caret::getTrainPerf(fit)
+  tibble(Modelo = nombre, `Hiperparámetros óptimos` = hp,
+         `Balanced Acc. (CV)` = round(p$TrainBalanced_Accuracy, 4),
+         `Sensibilidad (CV)` = round(p$TrainSensitivity, 4),
+         `Especificidad (CV)` = round(p$TrainSpecificity, 4),
+         `AUC (CV)` = round(p$TrainAUC, 4),
+         `F1 (CV)` = round(p$TrainF1, 4),
+         `Kappa (CV)` = round(p$TrainKappa, 4))
+}
+
+bind_rows(
+  fila_clf(fit_rf_clf, "Random Forest",
+           sprintf("mtry=%d, min.node.size=%d",
+                   fit_rf_clf$bestTune$mtry, fit_rf_clf$bestTune$min.node.size)),
+  fila_clf(fit_svm_clf, "SVM radial",
+           sprintf("sigma=%.2e, C=%g",
+                   fit_svm_clf$bestTune$sigma, fit_svm_clf$bestTune$C)),
+  fila_clf(fit_logit, "Logística regularizada",
+           sprintf("alpha=%.2f, lambda=%.4f",
+                   fit_logit$bestTune$alpha, fit_logit$bestTune$lambda)),
+  fila_clf(fit_xgb_clf, "XGBoost",
+           sprintf("nrounds=%d, max_depth=%d, eta=%.2f, min_child=%d",
+                   fit_xgb_clf$bestTune$nrounds, fit_xgb_clf$bestTune$max_depth,
+                   fit_xgb_clf$bestTune$eta, fit_xgb_clf$bestTune$min_child_weight))
+) |>
+  arrange(desc(`Balanced Acc. (CV)`)) |>
+  estilo_kable(caption = "Tabla 17 · Configuración óptima y rendimiento en validación cruzada (5×3) de los cuatro clasificadores. Ordenados por Balanced Accuracy decreciente.")
+```
+
+```{r comparacion-clf-plot, fig.width = 10, fig.height = 5, fig.cap = "Figura 12 · Distribución de las cuatro métricas principales (AUC, Balanced Accuracy, F1, Kappa) en los 15 folds (5×3) para cada clasificador. Las cajas no solapadas indican rendimiento estadísticamente distinguible."}
+bwplot(resamples_clf,
+       metric = c("AUC", "Balanced_Accuracy", "F1", "Kappa"),
+       layout = c(2, 2),
+       main = "Distribución de métricas por fold · clasificación SJL alto")
+```
+
+Los cuatro clasificadores quedan próximos en discriminación pero se separan en el punto de operación, como recogen la Tabla 17 y la Figura 12. En la Balanced Accuracy, que es la métrica de selección, la logística (0.7992) y el XGBoost (0.7964) van por delante, casi empatados, seguidos del SVM (0.7823); el Random Forest se descuelga con claridad (0.6774). La descomposición en sensibilidad y especificidad explica ese desfase. Los tres primeros reparten el acierto de forma equilibrada entre las dos clases, mientras que el Random Forest se sitúa en una esquina muy conservadora, con una especificidad de 0.9592 a costa de una sensibilidad de apenas 0.3956, y detecta menos de la mitad de los casos con SJL alto. La causa es el corte por defecto de 0.5, ya que la probabilidad que predice el Random Forest es la fracción de votos del bosque, una media que se mantiene baja cuando la clase positiva es rara, de modo que casi ningún caso la supera, y el reajuste de hiperparámetros no consigue desplazarla. El AUC lo confirma. Mide la discriminación con independencia del umbral, y ahí el Random Forest, pese a ser el peor en Balanced Accuracy, obtiene uno de los valores más altos (0.8722, solo por detrás del XGBoost con 0.8807), así que ordena a los sujetos por riesgo tan bien como los demás y solo falla al convertir esa ordenación en una decisión binaria al corte 0.5. Queda por determinar si estas diferencias son reales o entran dentro de la variabilidad entre folds.
+
+Las diferencias entre los cuatro clasificadores se contrastan igual que en la regresión. Sobre los 15 resamples comunes, `diff()` toma para cada métrica la diferencia media entre cada par de modelos y la contrasta con un t pareado, con la corrección de Bonferroni que `caret` aplica por defecto a las seis comparaciones.
+
+```{r comparacion-clf-diff}
+diff_clf <- diff(resamples_clf)
+summary(diff_clf)
+```
+
+El contraste matiza esa lectura. En la Balanced Accuracy, la logística, el XGBoost y el SVM no se distinguen entre sí (p ≥ 0.07) y comparten el primer grupo, mientras que el Random Forest se separa de los tres con un p-valor del orden de 10⁻⁹ a 10⁻¹¹, una diferencia rotunda. En el AUC el patrón cambia, ya que el XGBoost obtiene el valor más alto, significativamente por encima del SVM (p ≈ 1·10⁻⁵) y de la logística (p = 0.009), aunque no del Random Forest (p = 0.10), mientras que el SVM queda como el más bajo, por detrás de los otros tres. En F1 y en Kappa el XGBoost vuelve a quedar en cabeza, con ventaja significativa frente al SVM en ambas (p ≤ 4·10⁻⁵) y frente al Random Forest en F1 (p ≈ 5·10⁻⁴), mientras que en Kappa las demás diferencias no alcanzan significación. El XGBoost se mantiene así como el clasificador más sólido en validación cruzada, con el AUC más alto y en el primer grupo de Balanced Accuracy.
+
+### Perfiles de ajuste de hiperparámetros
+
+Cada gráfica muestra cómo varía la Balanced Accuracy de CV, la métrica de selección, al recorrer el grid de cada modelo.
+
+```{r rfclf-tuning-plot, fig.width = 9, fig.height = 4.5, fig.cap = "Figura 13 · Perfil de ajuste del Random Forest de clasificación. Balanced Accuracy (CV) en función de mtry, una curva por min.node.size. El círculo rojo marca la combinación seleccionada."}
+fit_rf_clf$results |>
+  mutate(min.node.size = factor(min.node.size)) |>
+  ggplot(aes(x = mtry, y = Balanced_Accuracy, color = min.node.size,
+             group = min.node.size)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.2) +
+  geom_point(data = ~ filter(.x, mtry == fit_rf_clf$bestTune$mtry,
+                              min.node.size == fit_rf_clf$bestTune$min.node.size),
+             color = ACCENT, size = 4, shape = 21, stroke = 1.5, fill = NA) +
+  scale_color_manual(values = PAL_QUAL[1:length(unique(fit_rf_clf$results$min.node.size))]) +
+  labs(x = "mtry", y = "Balanced Accuracy (CV)", color = "min.node.size",
+       title = "Ajuste de hiperparámetros del Random Forest · clasificación")
+```
+
+**Random Forest** (`mtry=50`, `min.node.size=1`). La Balanced Accuracy sube al pasar de √p (≈ 12, 0.6550) a p/3 (= 50, 0.6774) y a partir de ahí se aplana, con los valores de 50 a 149 prácticamente empatados (≈ 0.674–0.677), dentro de la variabilidad entre folds. El `min.node.size` apenas separa las curvas y se queda en 1, el valor por defecto de `ranger` en clasificación. El óptimo (`mtry=50`) es un punto interior modesto sobre esa meseta.
+
+```{r svmclf-tuning-plot, fig.width = 9, fig.height = 4.5, fig.cap = "Figura 14 · Perfil de ajuste del SVM radial de clasificación. Balanced Accuracy (CV) en función de C en escala logarítmica, una curva por sigma. El círculo rojo marca la combinación seleccionada."}
+fit_svm_clf$results |>
+  mutate(sigma_lab = formatC(sigma, format = "e", digits = 1)) |>
+  ggplot(aes(x = C, y = Balanced_Accuracy, color = sigma_lab, group = sigma_lab)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.2) +
+  geom_point(data = ~ filter(.x, C == fit_svm_clf$bestTune$C,
+                              sigma == fit_svm_clf$bestTune$sigma),
+             color = ACCENT, size = 4, shape = 21, stroke = 1.5, fill = NA) +
+  scale_x_log10() +
+  scale_color_manual(values = PAL_QUAL[1:length(unique(fit_svm_clf$results$sigma))]) +
+  labs(x = "C (escala log)", y = "Balanced Accuracy (CV)", color = "sigma",
+       title = "Ajuste de hiperparámetros del SVM radial · clasificación")
+```
+
+**SVM radial** (`sigma=2.71e-03`, `C=0.1`). Al contrario que en regresión, aquí la Balanced Accuracy cae de forma monótona al subir `C`, desde 0.7823 con `C=0.1` hasta 0.6397 con `C=100`. Un margen más blando (C bajo) generaliza mejor el desbalance, mientras que penalizar mucho los errores ajusta el ruido de la clase rara. El óptimo cae en el borde inferior del grid (`C=0.1`), aunque sobre una zona casi plana, ya que `C=0.1` y `C=1` quedan muy cerca (0.7823 y 0.7758) antes de que la curva se desplome, de modo que afinar `C` apenas cambia el resultado en ese extremo.
+
+```{r logitclf-tuning-plot, fig.width = 9, fig.height = 4.5, fig.cap = "Figura 15 · Perfil de ajuste de la logística regularizada. Balanced Accuracy (CV) en función de lambda en escala logarítmica, una curva por alpha. El círculo rojo marca la combinación seleccionada."}
+fit_logit$results |>
+  mutate(alpha = factor(alpha)) |>
+  ggplot(aes(x = lambda, y = Balanced_Accuracy, color = alpha, group = alpha)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.6) +
+  geom_point(data = ~ filter(.x, lambda == fit_logit$bestTune$lambda,
+                              alpha == as.character(fit_logit$bestTune$alpha)),
+             color = ACCENT, size = 4, shape = 21, stroke = 1.5, fill = NA) +
+  scale_x_log10() +
+  scale_color_manual(values = PAL_QUAL[1:length(unique(fit_logit$results$alpha))]) +
+  labs(x = "lambda (escala log)", y = "Balanced Accuracy (CV)", color = "alpha",
+       title = "Ajuste de hiperparámetros de la logística regularizada")
+```
+
+**Logística regularizada** (`alpha=0.75`, `lambda=0.0188`). El `lambda` gobierna el resultado y dibuja un máximo interior. La Balanced Accuracy sube hasta `lambda=0.0188` (0.7992) y cae a ambos lados, hacia 0.7670 con poca penalización (sobreajuste) y hacia 0.7628 con demasiada (el modelo se vacía hacia el intercepto). 
+
+```{r xgbclf-tuning-plot, fig.width = 9, fig.height = 4.5, fig.cap = "Figura 16 · Perfil de ajuste del XGBoost de clasificación. Balanced Accuracy (CV) en función de max_depth, una curva por eta y tipo de línea por min_child_weight; un panel por nrounds. El círculo rojo marca la combinación seleccionada."}
+fit_xgb_clf$results |>
+  mutate(eta = factor(eta), min_child_weight = factor(min_child_weight),
+         nrounds_lab = factor(paste("nrounds =", nrounds),
+                              levels = paste("nrounds =", sort(unique(nrounds))))) |>
+  ggplot(aes(x = max_depth, y = Balanced_Accuracy, color = eta,
+             group = interaction(eta, min_child_weight),
+             linetype = min_child_weight)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2.2) +
+  geom_point(data = ~ filter(.x,
+                             max_depth == fit_xgb_clf$bestTune$max_depth,
+                             nrounds == fit_xgb_clf$bestTune$nrounds,
+                             as.character(eta) == as.character(fit_xgb_clf$bestTune$eta),
+                             as.character(min_child_weight) == as.character(fit_xgb_clf$bestTune$min_child_weight)),
+             color = ACCENT, size = 4, shape = 21, stroke = 1.5, fill = NA) +
+  facet_wrap(~ nrounds_lab) +
+  scale_color_manual(values = PAL_QUAL[1:2]) +
+  labs(x = "max_depth", y = "Balanced Accuracy (CV)", color = "eta", linetype = "min_child_weight",
+       title = "Ajuste de hiperparámetros del XGBoost · clasificación")
+```
+
+**XGBoost** (`nrounds=300`, `max_depth=2`, `eta=0.03`, `min_child_weight=5`). A diferencia de la regresión, la Balanced Accuracy cae al aumentar la complejidad, tanto en `nrounds` (de 0.7964 con 300 rondas a 0.7495 con 1200) como en `max_depth` (de 0.7964 con profundidad 2 a 0.7158 con 10), de modo que el óptimo se sitúa en el extremo simple del grid. Todo ello es coherente con que la señal sea simple y aditiva, lo mismo que en regresión y lo que explica que la logística iguale a los modelos no lineales.
+
+## 4.7 Evaluación en test 
+
+Sobre el test se evalúan los cuatro modelos con las métricas que devuelve `confusionMatrix` más el AUC de la curva ROC. 
+
+```{r test-clf-conf}
+eval_clf_test <- function(fit, df, nombre) {
+  pred <- predict(fit, df)
+  prob <- predict(fit, df, type = "prob")[, "Alto"]
+  cm <- caret::confusionMatrix(pred, df$Alto, positive = "Alto")
+  roc_obj <- pROC::roc(df$Alto, prob, levels = c("Bajo", "Alto"),
+                       direction = "<", quiet = TRUE)
+  list(nombre = nombre, cm = cm, roc = roc_obj,
+       auc = as.numeric(pROC::auc(roc_obj)), pred = pred)
+}
+
+# Fila de la tabla. Las métricas se toman tal cual las calcula confusionMatrix
+# (en byClass y overall), más el AUC de pROC. Repite las columnas de la tabla de
+# CV y añade PPV, NPV y Accuracy, que solo se reportan en test.
+fila_test <- function(ev) {
+  m <- c(ev$cm$overall, ev$cm$byClass)
+  tibble(Modelo = ev$nombre,
+         `Balanced Acc.` = m[["Balanced Accuracy"]],
+         Sensitivity = m[["Sensitivity"]],
+         Specificity = m[["Specificity"]],
+         PPV = m[["Pos Pred Value"]],
+         NPV = m[["Neg Pred Value"]],
+         `AUC` = ev$auc,
+         F1 = m[["F1"]],
+         Kappa = m[["Kappa"]],
+         Accuracy = m[["Accuracy"]]) |>
+    mutate(across(where(is.numeric), \(x) round(x, 4)))
+}
+
+eval_rf <- eval_clf_test(fit_rf_clf, df_test_clf, "Random Forest")
+eval_svm <- eval_clf_test(fit_svm_clf, df_test_clf, "SVM radial")
+eval_glm <- eval_clf_test(fit_logit, df_test_clf, "Logística reg.")
+eval_xgb <- eval_clf_test(fit_xgb_clf, df_test_clf, "XGBoost")
+evals_clf <- list(eval_rf, eval_svm, eval_glm, eval_xgb)
+names(evals_clf) <- map_chr(evals_clf, "nombre")
+
+map_dfr(evals_clf, fila_test) |>
+  arrange(desc(`Balanced Acc.`)) |>
+  estilo_kable(caption = sprintf("Tabla 18 · Rendimiento de los cuatro clasificadores en el test set (n = %d sujetos · clase positiva: Alto). Ordenados por Balanced Accuracy, la métrica de selección.",
+                                  nrow(df_test_clf)))
+```
+
+En el test el patrón de la validación cruzada se mantiene. Los cuatro modelos discriminan bien, con un AUC entre 0.8750 y 0.9056. En Balanced Accuracy los tres modelos no conservadores quedan muy juntos (XGBoost 0.8146, SVM 0.8112, logística 0.8067), mientras que el Random Forest cae con claridad a 0.7346. El XGBoost encabeza el AUC y el F1 (0.5837), con un reparto equilibrado entre sensibilidad y especificidad, mientras que el Random Forest se sitúa en el extremo conservador, con la mejor especificidad (0.9563) pero detectando alrededor de la mitad de los casos altos (sensibilidad 0.5128).
+
+Los valores predictivos dependen de lo rara que sea la clase positiva y merecen una lectura aparte. El valor predictivo positivo de los tres modelos útiles es bajo (entre 0.4145 y 0.4656) pese a su buena sensibilidad. La razón es la prevalencia. Con solo un 14 % de casos altos, el grupo de bajos es tan grande que, aunque la especificidad sea alta, los falsos positivos que genera superan en número a los altos reales detectados, así que menos de la mitad de los marcados como Alto lo son de verdad. El Random Forest es el único con un PPV alto (0.6667). El valor predictivo negativo, en cambio, es alto en los cuatro (entre 0.9202 y 0.9609), de modo que una predicción de Bajo es más fiable.
+ 
+El Kappa, que mide el acuerdo corregido por azar, queda en un rango moderado (entre 0.4401 y 0.5188) y, curiosamente, lo encabeza el Random Forest, igual que su Accuracy es la más alta de los cuatro (0.8918). Ambas se inflan en parte porque al predecir casi siempre la clase mayoritaria se acierta mucho en términos globales. El caso de la Accuracy, la más alta justo en el peor modelo por Balanced Accuracy, lo examina la tabla siguiente.
+
+```{r test-clf-nir}
+nir <- eval_rf$cm$overall[["AccuracyNull"]]
+map_dfr(evals_clf, ~ tibble(
+  Modelo = .x$nombre,
+  Accuracy = round(.x$cm$overall[["Accuracy"]], 4),
+  `p (Acc > NIR)` = fmt_p(.x$cm$overall[["AccuracyPValue"]])
+)) |>
+  arrange(desc(Accuracy)) |>
+  estilo_kable(caption = sprintf("Tabla 19 · Accuracy de cada modelo frente al No Information Rate (NIR = %.4f) y p-valor del contraste de que la Accuracy lo supera. Ordenados por Accuracy decreciente.", nir))
+```
+
+El No Information Rate es la proporción de la clase mayoritaria, es decir, lo que acertaría un clasificador que predijera siempre la clase "Bajo". Un contraste binomial unilateral comprueba si la Accuracy de cada modelo lo supera. Solo el Random Forest queda por encima del NIR de forma significativa (0.8918 frente a 0.8545, p = 0.007), precisamente por su naturaleza conservadora, que lo acerca a ese clasificador trivial. Los otros modelos tienen una Accuracy por debajo del NIR. Esto justifica que la métrica de selección sea la Balanced Accuracy y no la Accuracy, porque con clases desbalanceadas el acierto global premia clasificarlo casi todo como la clase mayoritaria.
+
+Para saber si las diferencias de la Tabla 18 son reales, se contrastan en dos planos, uno por cada nivel de lectura. El primero es la discriminación. Se comparan los AUC por pares con el test de DeLong, el contraste pareado estándar para curvas ROC calculadas sobre las mismas predicciones, tomando la diferencia de AUC como tamaño del efecto. El segundo es el punto de operación al corte 0.5. El test de McNemar comprueba, para cada par de modelos, si aciertan y fallan sobre sujetos distintos. Las dos `p` se ajustan por Holm a las seis comparaciones.
+
+```{r test-clf-significancia}
+# Se reutilizan las curvas ROC y las predicciones ya calculadas en eval_clf_test.
+rocs_clf <- map(evals_clf, "roc")
+aciertos <- map(evals_clf, ~ .x$pred == df_test_clf$Alto)
+
+pares_clf <- combn(names(evals_clf), 2, simplify = FALSE)
+sig_test <- map_dfr(pares_clf, function(par) {
+  a <- par[[1]]
+  b <- par[[2]]
+  dl <- pROC::roc.test(rocs_clf[[a]], rocs_clf[[b]], method = "delong")
+  mc <- stats::mcnemar.test(table(aciertos[[a]], aciertos[[b]]))
+  tibble(`Modelo A` = a, `Modelo B` = b,
+         dAUC = as.numeric(rocs_clf[[a]]$auc - rocs_clf[[b]]$auc),
+         p_delong = dl$p.value, p_mcnemar = mc$p.value)
+}) |>
+  mutate(`Δ AUC` = formatC(dAUC, format = "f", digits = 3),
+         `p DeLong (Holm)` = fmt_p(p.adjust(p_delong, method = "holm")),
+         `p McNemar (Holm)` = fmt_p(p.adjust(p_mcnemar, method = "holm"))) |>
+  select(`Modelo A`, `Modelo B`, `Δ AUC`, `p DeLong (Holm)`, `p McNemar (Holm)`)
+
+estilo_kable(sig_test,
+             caption = sprintf("Tabla 20 · Significancia de las diferencias en test. DeLong sobre el AUC (discriminación, con la diferencia de AUC como tamaño del efecto) y McNemar sobre las decisiones al corte 0.5 (punto de operación); p ajustadas por Holm; n = %d sujetos.", nrow(df_test_clf)))
+```
+
+El test de DeLong encuentra una única diferencia significativa de AUC, la del XGBoost sobre el SVM (p = 0.049), mientras que el resto de parejas no se distingue (`p` ≥ 0.10), de modo que la discriminación es muy parecida entre los cuatro. El McNemar separa al Random Forest de los otros tres en el punto de operación (`p` de 0.0003, < 0.001 y 0.004 frente a SVM, logística y XGBoost), mientras que XGBoost, SVM y logística no se distinguen entre sí (`p` ≥ 0.07). La capacidad de ordenar a los sujetos por riesgo es muy similar entre los cuatro, y lo que separa al Random Forest es su forma de decidir al corte 0.5.
+
+```{r test-clf-confusion, fig.width = 10, fig.height = 8, fig.cap = "Figura 17 · Matrices de confusión en el test set para los cuatro clasificadores. Las filas son la predicción del modelo, las columnas la realidad. La diagonal son aciertos, las celdas fuera de diagonal son errores (falsos positivos arriba-derecha, falsos negativos abajo-izquierda). El sombreado y el porcentaje de cada celda son relativos a su columna real, de modo que cada columna suma 100 % y la celda de aciertos equivale a la sensibilidad (columna Alto) o a la especificidad (columna Bajo)."}
+plot_cm <- function(eval_obj) {
+  cm_df <- as.data.frame(eval_obj$cm$table) |>
+    rename(Prediccion = Prediction, Real = Reference) |>
+    group_by(Real) |>
+    mutate(pct_col = 100 * Freq / sum(Freq)) |>
+    ungroup()
+
+  ggplot(cm_df, aes(x = Real, y = Prediccion, fill = pct_col)) +
+    geom_tile(color = "white", linewidth = 0.8) +
+    geom_text(aes(label = sprintf("%d\n(%.1f%%)", Freq, pct_col),
+                  color = pct_col > 50),
+              size = 4, fontface = "bold") +
+    scale_fill_gradient(low = "grey88", high = HEADER, guide = "none",
+                        limits = c(0, 100)) +
+    scale_color_manual(values = c("TRUE" = "white", "FALSE" = "grey20"),
+                       guide = "none") +
+    scale_y_discrete(limits = rev) +
+    labs(x = "Clase real", y = "Predicción",
+         title = eval_obj$nombre,
+         subtitle = sprintf("BalAcc=%.3f  ·  AUC=%.3f",
+                            eval_obj$cm$byClass["Balanced Accuracy"],
+                            eval_obj$auc))
+}
+
+((plot_cm(eval_rf) | plot_cm(eval_svm)) / (plot_cm(eval_glm) | plot_cm(eval_xgb))) +
+  plot_annotation(title = "Matrices de confusión en el test set")
+```
+
+En los tres modelos no conservadores la celda de aciertos de la columna de los altos domina con claridad, mientras que en el Random Forest esa columna queda casi a partes iguales, reflejo de que se le escapa la mitad de los positivos. En el XGBoost, el mejor modelo, de los 78 sujetos realmente altos detecta 61 y de los 458 bajos clasifica bien 388, a costa de 70 falsas alarmas. 
+
+Para el modelo de referencia merece la pena ver el desglose completo que imprime `confusionMatrix`, con la tabla de aciertos y errores y, debajo, todos los estadísticos por clase del XGBoost reunidos en una sola salida.
+
+```{r test-clf-confusion-xgb}
+# Salida de consola de confusionMatrix para el modelo de referencia (XGBoost)
+op <- options(scipen = 0)
+print(eval_xgb$cm)
+options(op)
+```
+
+```{r test-clf-roc, fig.width = 7, fig.height = 6, fig.cap = "Figura 18 · Curvas ROC en el test set para los cuatro clasificadores. La línea diagonal punteada es la referencia de un clasificador aleatorio (AUC = 0.5). Cuanto más se aleje la curva de la diagonal hacia la esquina superior izquierda, mejor el clasificador. La leyenda muestra el AUC."}
+df_roc <- bind_rows(
+  tibble(FPR = 1 - eval_rf$roc$specificities,
+         TPR = eval_rf$roc$sensitivities,
+         Modelo = sprintf("Random Forest (AUC = %.3f)", eval_rf$auc)),
+  tibble(FPR = 1 - eval_svm$roc$specificities,
+         TPR = eval_svm$roc$sensitivities,
+         Modelo = sprintf("SVM radial (AUC = %.3f)", eval_svm$auc)),
+  tibble(FPR = 1 - eval_glm$roc$specificities,
+         TPR = eval_glm$roc$sensitivities,
+         Modelo = sprintf("Logística reg. (AUC = %.3f)", eval_glm$auc)),
+  tibble(FPR = 1 - eval_xgb$roc$specificities,
+         TPR = eval_xgb$roc$sensitivities,
+         Modelo = sprintf("XGBoost (AUC = %.3f)", eval_xgb$auc))
+)
+
+ggplot(df_roc, aes(x = FPR, y = TPR, color = Modelo)) +
+  geom_abline(slope = 1, intercept = 0, color = "grey70",
+              linetype = "dashed") +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = PAL_QUAL[1:4]) +
+  coord_equal() +
+  labs(x = "Tasa de falsos positivos (1 − Specificity)",
+       y = "Tasa de verdaderos positivos (Sensitivity)",
+       title = "Curvas ROC en el test set",
+       subtitle = sprintf("n = %d sujetos · clase positiva: SJL ≥ %.1f h",
+                          nrow(df_test_clf), UMBRAL_CLINICO),
+       color = NULL) +
+  theme(legend.position = c(0.65, 0.18),
+        legend.background = element_rect(fill = "white", color = NA))
+```
+
+Las curvas ROC confirman lo que dice el AUC. Las cuatro se separan con claridad de la diagonal y quedan muy juntas entre sí, con la del XGBoost ligeramente por encima en casi todo el recorrido. Como se entrelazan y apenas se distinguen, la ventaja del XGBoost es pequeña y, según el DeLong, solo significativa frente al SVM. La lectura importante es que la capacidad de ordenar a los sujetos por riesgo es alta y casi idéntica en los cuatro, y que la elección entre ellos se decide en el punto de operación, no en la discriminación.
+
+### Incertidumbre de las métricas en test (bootstrap)
+
+Las cifras de la Tabla 18 son estimaciones sobre una única muestra de test. Para acotar su incertidumbre sin reentrenar nada, se remuestrean por bootstrap los 536 sujetos del test (2000 réplicas) y se recalcula cada métrica del modelo de referencia, lo que da un intervalo de confianza al 95 %.
+
+```{r boot-clf, fig.width = 8, fig.height = 5, fig.align = "center", fig.cap = "Figura 18b · Métricas de clasificación del XGBoost en el test (n = 536, 78 positivos) con su intervalo de confianza al 95 % por bootstrap (2000 remuestreos). El punto es la estimación y la barra el intervalo; la vertical gris marca el azar (0.5). Las métricas centradas en la clase positiva (sensibilidad, PPV, F1) tienen intervalos más anchos por depender de los 78 positivos, mientras que la especificidad y el AUC, apoyados en los negativos, son más precisos."}
+truth_clf_b <- df_test_clf$Alto
+pred_clf_b  <- predict(fit_xgb_clf, df_test_clf)
+prob_clf_b  <- predict(fit_xgb_clf, df_test_clf, type = "prob")[, "Alto"]
+
+metricas_clf_b <- function(t, p, pr) {
+  TP <- sum(p == "Alto" & t == "Alto"); FP <- sum(p == "Alto" & t == "Bajo")
+  FN <- sum(p == "Bajo" & t == "Alto"); TN <- sum(p == "Bajo" & t == "Bajo")
+  sens <- TP / (TP + FN); spec <- TN / (TN + FP); ppv <- TP / (TP + FP)
+  npos <- sum(t == "Alto"); nneg <- sum(t == "Bajo"); r <- rank(pr)
+  auc <- (sum(r[t == "Alto"]) - npos * (npos + 1) / 2) / (npos * nneg)
+  c(`Balanced Accuracy` = (sens + spec) / 2, Sensibilidad = sens,
+    Especificidad = spec, PPV = ppv, F1 = 2 * ppv * sens / (ppv + sens), AUC = auc)
+}
+
+set.seed(0)
+n_clf_b <- length(truth_clf_b)
+bs_clf <- t(replicate(2000, {
+  i <- sample.int(n_clf_b, n_clf_b, replace = TRUE)
+  metricas_clf_b(truth_clf_b[i], pred_clf_b[i], prob_clf_b[i])
+}))
+pe_clf <- metricas_clf_b(truth_clf_b, pred_clf_b, prob_clf_b)
+
+ic_clf <- tibble(
+  Metrica = factor(names(pe_clf), levels = rev(names(pe_clf))),
+  est = pe_clf,
+  lo = apply(bs_clf, 2, quantile, 0.025, na.rm = TRUE),
+  hi = apply(bs_clf, 2, quantile, 0.975, na.rm = TRUE))
+
+ggplot(ic_clf, aes(est, Metrica)) +
+  geom_vline(xintercept = 0.5, color = "grey75", linetype = "dotted") +
+  geom_errorbar(aes(xmin = lo, xmax = hi), orientation = "y", width = 0.22,
+                color = HEADER, linewidth = 0.8) +
+  geom_point(color = ACCENT, size = 3) +
+  geom_text(aes(label = sprintf("%.3f [%.3f, %.3f]", est, lo, hi)),
+            vjust = -1.1, size = 3.2, color = HEADER) +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  labs(x = "Valor de la métrica (IC 95 % por bootstrap)", y = NULL,
+       title = "Métricas de clasificación (XGBoost) en test con IC 95 %")
+```
+
+El resultado muestra dos cosas. Las métricas centradas en la clase positiva (sensibilidad, PPV y F1) tienen los intervalos más anchos, porque se sostienen sobre los 78 positivos del test, mientras que la especificidad y el AUC, apoyados en los más de cuatrocientos negativos, son mucho más precisos. Esa es la razón estadística por la que esas métricas no conviene leerlas al cuarto decimal. Y, más importante, incluso los extremos inferiores quedan por encima del azar (la Balanced Accuracy por encima de 0.76 y el AUC por encima de 0.87), de modo que la discriminación del modelo es sólida y no un artefacto del tamaño del test. La comparación estable entre modelos sigue siendo la validación cruzada 5×3, y estos intervalos confirman que el orden observado no se debe al azar.
+
+---
+
+# 5 · Importancia de variables
+
+Con el mejor modelo de regresión y el de clasificación ya elegidos, esta sección centraliza la interpretabilidad. Se examina en qué predictores se apoya cada tarea y qué variables comparten.
+
+Los modelos de árboles tienen importancia propia y directamente interpretable. En XGBoost es el *Gain*, la mejora total de la función de pérdida aportada por los splits que usan esa variable. `caret::varImp()` reescala el resultado a [0, 100]. Esta importancia por ganancia tiende a favorecer a los predictores continuos y con muchos valores distintos [16], por lo que su lectura se contrasta con los valores SHAP.
+
+Las dos tareas comparten el mismo cómputo de importancia, así que se centraliza en dos helpers para no repetir el código en cada apartado.
+
+```{r imp-helpers}
+# Top-n de importancia de un modelo caret, reescalada a [0, 100].
+importancia_top <- function(fit, n = 15) {
+  caret::varImp(fit, scale = TRUE)$importance |>
+    tibble::rownames_to_column("Variable") |>
+    arrange(desc(Overall)) |>
+    slice_head(n = n)
+}
+
+# Barras horizontales de una tabla de importancia (etiquetas acortadas).
+plot_importancia <- function(imp, titulo, fill = HEADER, subtitle = NULL) {
+  imp |>
+    mutate(Variable = acortar_var(Variable)) |>
+    ggplot(aes(reorder(Variable, Overall), Overall)) +
+    geom_col(fill = fill, width = 0.7) +
+    coord_flip() +
+    labs(x = NULL, y = "Importancia (0–100)", title = titulo, subtitle = subtitle)
+}
+
+# TreeSHAP exacto de un XGBoost de caret sobre todo un conjunto. Reconstruye la
+# matriz de diseño igual que caret (model.matrix sin intercepto) y la alinea con
+# los feature_names del booster. Devuelve un shapviz con las etiquetas acortadas.
+shap_xgb_tree <- function(fit, df, outcome) {
+  preds <- df[, setdiff(names(df), outcome), drop = FALSE]
+  mat <- model.matrix(~ ., data = preds)[, -1, drop = FALSE]
+  mat <- mat[, fit$finalModel$feature_names, drop = FALSE]
+  sv <- shapviz::shapviz(fit$finalModel, X_pred = mat, X = as.data.frame(mat))
+  colnames(sv$S) <- acortar_var(colnames(sv$S))
+  colnames(sv$X) <- acortar_var(colnames(sv$X))
+  sv
+}
+
+# Traduce al español la leyenda de color del beeswarm de shapviz ("Feature value",
+# "High"/"Low") sin alterar los colores: muta la escala de color en su sitio.
+shap_legend_es <- function(p) {
+  for (sc in p$scales$scales) {
+    if (any(c("colour", "color") %in% sc$aesthetics)) {
+      sc$name <- "Valor de la variable"
+      sc$labels <- c("Bajo", "Alto")
+      if (is.list(sc$guide)) sc$guide$title <- "Valor de la variable"
+    }
+  }
+  if (!is.null(p$labels$colour)) p$labels$colour <- "Valor de la variable"
+  if (!is.null(p$labels$color))  p$labels$color  <- "Valor de la variable"
+  p
+}
+```
+
+## 5.1 Importancia en la regresión
+
+```{r importancia-modelo}
+# XGBoost, el modelo de referencia de la regresión.
+imp_top <- importancia_top(fit_xgb)
+
+imp_top |>
+  transmute(Variable = acortar_var(Variable), Importancia = round(Overall, 1)) |>
+  estilo_kable(caption = "Tabla 21 · Los 15 predictores más influyentes del XGBoost de regresión.")
+```
+
+```{r importancia-plot, fig.width = 9, fig.height = 5, fig.cap = "Figura 19 · Importancia de las 15 variables más influyentes del XGBoost de regresión. Una barra más larga indica mayor contribución a reducir el error de predicción del SJL."}
+plot_importancia(imp_top, "Variables más relevantes · XGBoost de regresión")
+```
+
+El XGBoost de regresión concentra casi toda su capacidad predictiva en dos variables de regularidad del ritmo. La primera es la estabilidad interdiaria del sueño (`sleep_is`), que mide hasta qué punto el patrón de descanso de 24 horas se repite igual día tras día. La segunda es el indicador de despertarse cada día aproximadamente a la misma hora. Las dos describen lo constante que es el horario de sueño y por eso encabezan con mucha diferencia, ya que el SJL es por construcción el desajuste de ese horario entre días libres y laborables, de modo que apoyarse en marcadores de regularidad resulta en parte circular, una cautela que se abordará después con el Set B. 
+
+El segundo bloque recoge la inquietud en las horas de menor actividad. El movimiento (`tiempomov_valorl10` y `tiempomov_valorl5`) y la intensidad motora (`intensidad_valorl10`) durante esas ventanas miden cuánta actividad persiste en el tramo más tranquilo del día, el WASO medio (`media_waso`) son los minutos de vigilia tras haberse dormido, y la actividad detectada durante el sueño (`media_tiempoactividadensueno`) capta los micro-despertares y la fragmentación. Conviene señalar dos matices, válidos para el resto del capítulo. Las ventanas L5 y L10 (las 5 y 10 horas consecutivas de menor movimiento) suelen estar próximas al periodo de reposo del sujeto, aunque la actigrafía no permite afirmarlo con certeza, y el peso individual de estos predictores secundarios es modesto frente al de la regularidad del sueño, de modo que su interpretación es orientativa.
+
+El tercer bloque son marcadores de fase. Las horas centrales de las ventanas de menor señal de sueño (`sleep_horal5decimal` y `sleep_horal10decimal`, de 5 y 10 horas), la del pico de luz ambiental (`light_horam5decimal`, las 5 horas de más luz) y la del periodo de menor intensidad de actividad (`intensidad_horal10decimal`) sitúan el ritmo del sujeto dentro del día. Reflejan la fase circadiana del sujeto, que sí es un predictor legítimo del SJL, ya que dormir tarde no es lo mismo que dormir de forma irregular.
+
+Cierran el top-15 las medidas clásicas de cantidad y calidad del sueño, como la eficiencia (`media_eficienciadelsueno`, el porcentaje del tiempo en cama realmente dormido), el sueño efectivo (`media_tiemporealsueno`) y la duración de las siestas (`media_duracionsiestas`). En conjunto, el modelo lee el SJL como una mezcla de regularidad del ritmo, fragmentación del descanso, fase circadiana y calidad del sueño, que es el sustrato fisiológico del jet lag social.
+
+La importancia mide el peso de cada predictor, pero no su dirección. Para leer si los valores altos suben o bajan el SJL se añaden los valores SHAP [17], que descomponen cada predicción individual en la contribución de cada variable. Conviene tener presente que la importancia mide la ganancia de los cortes en el entrenamiento  y el SHAP la contribución media a las predicciones en el test, de modo que sus listas de 15 variables se solapan en gran parte pero no coinciden totalmente.
+
+```{r shap-reg, fig.width = 9, fig.height = 6, fig.cap = "Figura 20 · Valores SHAP (TreeSHAP, beeswarm) del XGBoost de regresión sobre los 536 sujetos de test. Cada punto es un sujeto; el eje X es la contribución de cada variable (en horas) al SJL predicho; el color es el valor de la variable (claro alto, oscuro bajo)."}
+sv_reg <- shap_xgb_tree(fit_xgb, df_test, "SJL")
+shap_legend_es(shapviz::sv_importance(sv_reg, kind = "beeswarm", max_display = 15)) +
+  labs(title = "Valores SHAP · XGBoost de regresión",
+       x = "Contribución SHAP al SJL predicho (h)")
+```
+
+El beeswarm añade la dirección. Una mayor estabilidad interdiaria del sueño y el despertarse a la misma hora empujan el SJL predicho a la baja (más regularidad, menos desfase), mientras que una fase del sueño más tardía y más movimiento e intensidad motora en las horas de menor actividad lo empujan al alza, coherente con la fisiología del jet lag social. La contribución de `sleep_is` es además de otra escala, aportando varias veces más de lo que aporta cualquier otra variable, lo que refleja hasta qué punto la regularidad del sueño domina la predicción.
+
+Entre los predictores secundarios destaca la duración de las siestas, que apunta en sentido protector, ya que quienes duermen siesta reciben una contribución negativa y, por tanto, un SJL predicho más bajo. El resto del top-15, la eficiencia y la cantidad de sueño, el WASO y los marcadores de fase de luz y actividad, contribuye poco por sujeto, con nubes de puntos centradas en torno a cero que afinan la predicción sin reorientarla.
+
+## 5.2 Importancia en la clasificación
+
+```{r importancia-clf}
+imp_clf <- importancia_top(fit_xgb_clf)
+
+imp_clf |>
+  transmute(Variable = acortar_var(Variable), Importancia = round(Overall, 1)) |>
+  estilo_kable(caption = "Tabla 22 · Los 15 predictores más influyentes del XGBoost de clasificación.")
+```
+
+```{r importancia-clf-plot, fig.width = 9, fig.height = 5, fig.cap = "Figura 21 · Importancia de las 15 variables más influyentes del XGBoost de clasificación, reescalada a [0, 100]."}
+plot_importancia(imp_clf, "Variables más relevantes · XGBoost de clasificación")
+```
+
+El clasificador XGBoost descansa sobre las mismas familias. La estabilidad interdiaria del descanso (`sleep_is`) y el despertarse siempre a la misma hora dominan con mucha diferencia sobre el resto, seguidos de la fase del ritmo (`sleep_horal5decimal`), el movimiento en reposo (`tiempomov_valorl10`) y el WASO medio (`media_waso`). Respecto a la regresión, el clasificador suma al top-15 cuatro predictores, la dispersión de la señal de sueño (`sleep_sd`), la estabilidad interdiaria de la temperatura (`temperatura_is`), la amplitud del ritmo de luz (`light_ra`) y el indicador de dormir en la franja de 22 a 10 h.
+
+## 5.3 Variables comunes a las dos tareas
+
+```{r importancia-comunes}
+comunes <- intersect(imp_top$Variable, imp_clf$Variable)
+tibble(`Variable (común al top-15 de ambas tareas)` = acortar_var(comunes)) |>
+  estilo_kable(caption = sprintf("Tabla 23 · Variables presentes en el top-15 de importancia tanto de regresión como de clasificación (%d de 15).", length(comunes)))
+```
+
+La coincidencia es notable, ya que 11 de las 15 variables más influyentes son comunes a las dos tareas. Predecir el SJL como valor continuo o clasificar el riesgo (≥ 2 h) se apoya, en lo esencial, en los mismos marcadores.
+
+## 5.4 Robustez frente a la circularidad
+
+El ranking anterior plantea una cautela. La variable que lo encabeza, `sleep_is`, mide la estabilidad interdiaria del sueño, es decir, lo regular que es el patrón de sueño día a día. De esta manera, predecir el SJL a partir de `sleep_is` es en parte circular, porque equivale a predecir la irregularidad del sueño desde su propia regularidad. La misma circularidad afecta al resto de variables del canal de sueño ligadas a ese constructo, `sleep_sd` (la dispersión de la señal de sueño), los índices `sleep_cfi` y `sleep_chs` (que contienen la estabilidad interdiaria en su fórmula) y el indicador de despertarse siempre a la misma hora.
+
+Para acotar esa circularidad se define un Set B, el subconjunto que retira esa familia de regularidad del canal de sueño, frente al conjunto completo de predictores, el de referencia usado hasta aquí. Sobre el Set B se reentrenan los cuatro modelos para estimar el valor predictivo genuino, no circular.
+
+```{r setB-datos}
+# Set B: se retira la regularidad del canal de sueño (circular con el SJL), esto
+# es sleep_is, sleep_cfi, sleep_chs, sleep_sd y el indicador de despertarse a la
+# misma hora.
+vars_regularidad <- intersect(
+  c("sleep_is", "sleep_cfi", "sleep_chs", "sleep_sd",
+    grep("issueno3", names(df_train), value = TRUE)), names(df_train))
+df_train_B <- df_train[, setdiff(names(df_train), vars_regularidad)]
+df_test_B <- df_test[, setdiff(names(df_test), vars_regularidad)]
+```
+
+Las parrillas se generan con las mismas constructoras del conjunto completo, adaptadas al nuevo tamaño del espacio de predictores. Solo cambian los valores que dependen de él: el `mtry` del Random Forest, el `sigma` del SVM y la secuencia de `lambda` del Elastic Net.
+
+```{r setB-grids}
+# Grids adaptados al Set B. Solo cambia lo que depende del número de predictores
+# (mtry en el RF, la secuencia de lambda en el Elastic Net y sigma en el SVM),
+# que baja de 149 a 144 al quitar la familia de regularidad del sueño.
+p_B <- ncol(df_train_B) - 1
+grid_rf_B <- grid_rf_p(p_B)
+lam_max_B <- max(glmnet::glmnet(model.matrix(SJL ~ ., data = df_train_B)[, -1],
+                                df_train_B$SJL, alpha = 1)$lambda)
+grid_glmnet_B <- grid_glmnet_lam(lam_max_B)
+grid_svm_B <- grid_svm_sig(estimar_sigma(df_train_B))
+
+cat(sprintf("Set B: %d predictores\n", p_B))
+cat("  mtry (RF):       ", paste(sort(unique(grid_rf_B$mtry)), collapse = ", "), "\n")
+cat("  sigma (SVM):     ", paste(formatC(sort(unique(grid_svm_B$sigma)), format = "e", digits = 2), collapse = ", "), "\n")
+cat(sprintf("  lambda.max (EN):  %.4f  (secuencia hasta lambda.max/1000)\n", lam_max_B))
+```
+
+```{r setB-train, eval = FALSE}
+# Entrenamiento paralelo de los cuatro modelos sobre el Set B
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+
+set.seed(0)
+fit_rf_setB <- caret::train(
+  SJL ~ .,
+  data = df_train_B,
+  method = "ranger",
+  tuneGrid = grid_rf_B,
+  trControl = ctrl_reg,
+  metric = "RMSE",
+  num.trees = 500,
+  num.threads = 1,
+  importance = "none"
+)
+
+set.seed(0)
+fit_svm_setB <- caret::train(
+  SJL ~ .,
+  data = df_train_B,
+  method = "svmRadial",
+  tuneGrid = grid_svm_B,
+  trControl = ctrl_reg,
+  metric = "RMSE",
+  preProcess = c("corr", "center", "scale")
+)
+
+set.seed(0)
+fit_glmnet_setB <- caret::train(
+  SJL ~ .,
+  data = df_train_B,
+  method = "glmnet",
+  tuneGrid = grid_glmnet_B,
+  trControl = ctrl_reg,
+  metric = "RMSE",
+  preProcess = c("corr", "center", "scale")
+)
+
+set.seed(0)
+fit_xgb_setB <- caret::train(
+  SJL ~ .,
+  data = df_train_B,
+  method = "xgbTree",
+  tuneGrid = grid_xgb,
+  trControl = ctrl_reg,
+  metric = "RMSE",
+  verbosity = 0,
+  nthread = 1
+)
+
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+for (nm in c("rf", "svm", "glmnet", "xgb"))
+  saveRDS(get(paste0("fit_", nm, "_setB")), file.path(MODELS_DIR, sprintf("fit_%s_setB.rds", nm)))
+```
+
+```{r setB-load}
+fit_rf_setB <- leer_cache("fit_rf_setB", "setB-train")
+fit_svm_setB <- leer_cache("fit_svm_setB", "setB-train")
+fit_glmnet_setB <- leer_cache("fit_glmnet_setB", "setB-train")
+fit_xgb_setB <- leer_cache("fit_xgb_setB", "setB-train")
+```
+
+```{r setB-comparacion}
+# Métricas medias de CV (R²/RMSE/MAE sobre los 15 resamples) de la mejor combinación, vía getTrainPerf
+modelos_full <- list(RF = fit_rf, SVM = fit_svm, `Elastic Net` = fit_glmnet, XGBoost = fit_xgb)
+modelos_B <- list(RF = fit_rf_setB, SVM = fit_svm_setB, `Elastic Net` = fit_glmnet_setB, XGBoost = fit_xgb_setB)
+r2_cv <- function(modelos) sapply(modelos, \(f) round(caret::getTrainPerf(f)$TrainRsquared, 4))
+rmse_cv <- function(modelos) sapply(modelos, \(f) round(caret::getTrainPerf(f)$TrainRMSE, 4))
+mae_cv <- function(modelos) sapply(modelos, \(f) round(caret::getTrainPerf(f)$TrainMAE, 4))
+
+tibble(
+  Modelo = names(modelos_full),
+  `R² completo` = r2_cv(modelos_full),
+  `R² Set B` = r2_cv(modelos_B),
+  `RMSE completo` = rmse_cv(modelos_full),
+  `RMSE Set B` = rmse_cv(modelos_B),
+  `MAE completo` = mae_cv(modelos_full),
+  `MAE Set B` = mae_cv(modelos_B)
+) |>
+  arrange(desc(`R² Set B`)) |>
+  estilo_kable(caption = "Tabla 24 · Rendimiento en validación cruzada (5×3) sobre todas las variables (completo) frente al Set B (sin la regularidad del canal de sueño), para los cuatro modelos de regresión.")
+```
+
+Quitar la regularidad del canal de sueño cuesta una caída pequeña pero sistemática. En validación cruzada (Tabla 24) el R² de XGBoost baja de 0.4528 a 0.4201, y de forma parecida en los demás modelos. 
+
+```{r setB-test}
+# Rendimiento en test.
+fila_test_B <- function(m) {
+  mf <- caret::postResample(predict(modelos_full[[m]], df_test), df_test$SJL)
+  mb <- caret::postResample(predict(modelos_B[[m]], df_test_B), df_test_B$SJL)
+  tibble(Modelo = m,
+         `R² completo` = round(mf[["Rsquared"]], 4),
+         `R² Set B` = round(mb[["Rsquared"]], 4),
+         `RMSE completo` = round(mf[["RMSE"]], 4),
+         `RMSE Set B` = round(mb[["RMSE"]], 4),
+         `MAE completo` = round(mf[["MAE"]], 4),
+         `MAE Set B` = round(mb[["MAE"]], 4))
+}
+
+purrr::map_dfr(names(modelos_full), fila_test_B) |>
+  arrange(desc(`R² Set B`)) |>
+  estilo_kable(caption = "Tabla 25 · Rendimiento en el conjunto de test sobre todas las variables (completo) frente al Set B (sin la regularidad del canal de sueño), para los cuatro modelos de regresión.")
+```
+
+Sobre el test (Tabla 25) retirar la familia de regularidad del sueño apenas afecta a los mejores modelos: el XGBoost pasa de un R² de 0.4875 a 0.4757 y el Random Forest de 0.4700 a 0.4683, de modo que el Set B conserva una capacidad predictiva genuina en torno a 0.46–0.48, casi la del modelo completo. Solo la Elastic Net acusa más la pérdida (de 0.4554 a 0.3904), coherente con que un modelo lineal dependa más de unos pocos predictores fuertes. Por tanto, la señal no es un mero reflejo del SJL, porque sobrevive a quitar las variables más circulares con la respuesta.
+
+La pérdida es pequeña y del mismo orden en validación cruzada (Tabla 24) y en test (Tabla 25), de unas pocas centésimas de R² en los modelos no lineales, con la Elastic Net como única excepción algo mayor. En conjunto, quedarse solo con el Set B tiene un coste menor y consistente entre validación y test, de modo que es una opción legítima si se prioriza un modelo libre de la circularidad.
+
+La importancia del Set B muestra sobre qué predictores genuinos se sostiene esa señal.
+
+```{r setB-importancia-plot, fig.width = 9, fig.height = 5, fig.cap = "Figura 22 · Importancia de las 15 variables más influyentes del XGBoost del Set B (sin la regularidad del canal de sueño)."}
+importancia_top(fit_xgb_setB) |>
+  plot_importancia("Variables más relevantes · XGBoost del Set B",
+                   fill = ACCENT, subtitle = "Sin la regularidad del canal de sueño")
+```
+
+Sin la regularidad del sueño, el ranking lo encabezan predictores genuinamente distintos. Mandan el movimiento en las ventanas de menor señal (`tiempomov_valorl5` y `tiempomov_valorl10`) y la fase del ritmo (`sleep_horal5decimal` y `sleep_horal10decimal`), seguidos de la intensidad de la actividad y la actividad detectada durante el sueño. Los índices circadianos de los otros canales (`tap_is`y `tiempomov_is`) aparecen, pero en un papel modesto y por detrás, lo que confirma que la circularidad estaba concentrada en el canal de sueño. Para leer la dirección de estos predictores, y no solo su peso, se recurre a los valores SHAP.
+
+```{r shap-setB, fig.width = 9, fig.height = 6, fig.cap = "Figura 23 · Valores SHAP (TreeSHAP, beeswarm) del XGBoost del Set B sobre los 536 sujetos de test. Cada punto es un sujeto. El eje X es la contribución (en horas) al SJL predicho. El color es el valor de la variable (claro alto, oscuro bajo)."}
+sv_B <- shap_xgb_tree(fit_xgb_setB, df_test_B, "SJL")
+shap_legend_es(shapviz::sv_importance(sv_B, kind = "beeswarm", max_display = 15)) +
+  labs(title = "Valores SHAP · XGBoost del Set B (sin regularidad del sueño)",
+       x = "Contribución SHAP al SJL predicho (h)")
+```
+
+```{r imp-shap-combo, fig.width = 12, fig.height = 5.6, fig.cap = "Figura combinada para el cuerpo de la memoria: (a) importancia del XGBoost de regresión sobre el conjunto completo y (b) valores SHAP del XGBoost del Set B (sin la regularidad del sueño)."}
+p_imp <- plot_importancia(imp_top, NULL) + theme_tfm(11)
+p_shap <- shap_legend_es(shapviz::sv_importance(sv_B, kind = "beeswarm", max_display = 15)) +
+  labs(x = "Contribución SHAP al SJL predicho (h)", y = NULL) +
+  theme_tfm(11)
+(p_imp | p_shap) +
+  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
+    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 13)))
+```
+
+Más movimiento e intensidad motora en las horas de menor actividad y una fase del sueño más tardía empujan el SJL predicho al alza, mientras que dormir en la franja convencional (22 a 10 h) lo empuja a la baja.
+
+La misma circularidad amenaza a la clasificación, donde `sleep_is` y el despertarse a la misma hora siguen dominando con claridad (Tabla 22). Para comprobar que la discriminación tampoco es un mero reflejo de la respuesta, se reentrenan los cuatro clasificadores sobre el Set B y se comparan con el modelo completo en validación cruzada y en el conjunto de test.
+
+```{r setB-clf-train, eval = FALSE}
+# Clasificadores del Set B.
+df_train_B_clf <- df_train_B |> mutate(SJL = NULL, Alto = y_binario[idx_train])
+
+p_B_clf <- ncol(df_train_B_clf) - 1
+grid_rf_clf_B <- grid_rf_p(p_B_clf, splitrule = "gini", min.node.size = c(1, 5, 10))
+
+grid_svm_clf_B <- grid_svm_sig(estimar_sigma(df_train_B))
+
+lam_max_logit_B <- max(glmnet::glmnet(model.matrix(Alto ~ ., data = df_train_B_clf)[, -1],
+                                      df_train_B_clf$Alto, alpha = 1, family = "binomial")$lambda)
+grid_logit_B <- grid_glmnet_lam(lam_max_logit_B)
+
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+
+set.seed(0)
+fit_rf_clf_setB <- caret::train(
+  Alto ~ .,
+  data = df_train_B_clf,
+  method = "ranger",
+  tuneGrid = grid_rf_clf_B,
+  trControl = ctrl_clf,
+  metric = "Balanced_Accuracy",
+  num.trees = 500,
+  num.threads = 1,
+  importance = "none"
+)
+
+set.seed(0)
+fit_svm_clf_setB <- caret::train(
+  Alto ~ .,
+  data = df_train_B_clf,
+  method = "svmRadial",
+  tuneGrid = grid_svm_clf_B,
+  trControl = ctrl_clf,
+  metric = "Balanced_Accuracy",
+  preProcess = c("corr", "center", "scale")
+)
+
+set.seed(0)
+fit_logit_setB <- caret::train(
+  Alto ~ .,
+  data = df_train_B_clf,
+  method = "glmnet",
+  family = "binomial",
+  tuneGrid = grid_logit_B,
+  trControl = ctrl_clf,
+  metric = "Balanced_Accuracy",
+  preProcess = c("corr", "center", "scale")
+)
+
+set.seed(0)
+fit_xgb_clf_setB <- caret::train(
+  Alto ~ .,
+  data = df_train_B_clf,
+  method = "xgbTree",
+  tuneGrid = grid_xgb,
+  trControl = ctrl_clf,
+  metric = "Balanced_Accuracy",
+  verbosity = 0,
+  nthread = 1
+)
+
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+for (nm in c("rf_clf", "svm_clf", "logit", "xgb_clf"))
+  saveRDS(get(paste0("fit_", nm, "_setB")), file.path(MODELS_DIR, sprintf("fit_%s_setB.rds", nm)))
+```
+
+```{r setB-clf-load}
+fit_rf_clf_setB <- leer_cache("fit_rf_clf_setB", "setB-clf-train")
+fit_svm_clf_setB <- leer_cache("fit_svm_clf_setB", "setB-clf-train")
+fit_logit_setB <- leer_cache("fit_logit_setB", "setB-clf-train")
+fit_xgb_clf_setB <- leer_cache("fit_xgb_clf_setB", "setB-clf-train")
+```
+
+```{r setB-clf-cv}
+# Métricas de CV (Balanced Accuracy y AUC) de la mejor combinación, completo vs Set B.
+modelos_clf_full <- list("Random Forest" = fit_rf_clf, "SVM radial" = fit_svm_clf,
+                         "Logística reg." = fit_logit, "XGBoost" = fit_xgb_clf)
+modelos_clf_B <- list("Random Forest" = fit_rf_clf_setB, "SVM radial" = fit_svm_clf_setB,
+                      "Logística reg." = fit_logit_setB, "XGBoost" = fit_xgb_clf_setB)
+
+ba_auc_cv <- function(modelos, metrica) sapply(modelos, \(f) round(caret::getTrainPerf(f)[[metrica]], 4))
+
+tibble(
+  Modelo = names(modelos_clf_full),
+  `Bal. Acc. completo` = ba_auc_cv(modelos_clf_full, "TrainBalanced_Accuracy"),
+  `Bal. Acc. Set B` = ba_auc_cv(modelos_clf_B, "TrainBalanced_Accuracy"),
+  `AUC completo` = ba_auc_cv(modelos_clf_full, "TrainAUC"),
+  `AUC Set B` = ba_auc_cv(modelos_clf_B, "TrainAUC")
+) |>
+  arrange(desc(`Bal. Acc. Set B`)) |>
+  estilo_kable(caption = "Tabla 26 · Rendimiento en validación cruzada (5×3) de los cuatro clasificadores sobre todas las variables (completo) frente al Set B (sin la regularidad del canal de sueño). Clase positiva: Alto.")
+```
+
+En validación cruzada (Tabla 26) la Balanced Accuracy apenas cambia al pasar al Set B: el SVM baja de 0.7823 a 0.7754, la logística de 0.7992 a 0.7925, el XGBoost algo más (de 0.7964 a 0.7682) y el Random Forest se mantiene casi igual (de 0.6774 a 0.6661). El AUC desciende un poco más, sobre todo en el Random Forest (de 0.8722 a 0.8307), pero se mantiene alto en los cuatro, entre 0.8307 y 0.8628 en el Set B.
+
+```{r setB-clf-test}
+# Comparación en test: Balanced Accuracy, sensibilidad, F1 y AUC, completo vs Set B.
+df_test_B_clf <- df_test_B |> mutate(SJL = NULL, Alto = y_binario[-idx_train])
+
+ba_auc_test <- function(fit, df) {
+  pred <- predict(fit, df)
+  prob <- predict(fit, df, type = "prob")[, "Alto"]
+  cm <- caret::confusionMatrix(pred, df$Alto, positive = "Alto")
+  auc <- as.numeric(pROC::auc(pROC::roc(df$Alto, prob, levels = c("Bajo", "Alto"), direction = "<", quiet = TRUE)))
+  c(BA = cm$byClass[["Balanced Accuracy"]], Sens = cm$byClass[["Sensitivity"]],
+    F1 = cm$byClass[["F1"]], AUC = auc)
+}
+
+fila_clf_B <- function(m) {
+  mf <- ba_auc_test(modelos_clf_full[[m]], df_test_clf)
+  mb <- ba_auc_test(modelos_clf_B[[m]], df_test_B_clf)
+  tibble(Modelo = m,
+         `Bal. Acc. completo` = round(mf[["BA"]], 4),
+         `Bal. Acc. Set B` = round(mb[["BA"]], 4),
+         `Sens. completo` = round(mf[["Sens"]], 4),
+         `Sens. Set B` = round(mb[["Sens"]], 4),
+         `F1 completo` = round(mf[["F1"]], 4),
+         `F1 Set B` = round(mb[["F1"]], 4),
+         `AUC completo` = round(mf[["AUC"]], 4),
+         `AUC Set B` = round(mb[["AUC"]], 4))
+}
+
+purrr::map_dfr(names(modelos_clf_full), fila_clf_B) |>
+  arrange(desc(`Bal. Acc. Set B`)) |>
+  estilo_kable(caption = "Tabla 27 · Rendimiento en el conjunto de test de los cuatro clasificadores sobre todas las variables (completo) frente al Set B (sin la regularidad del canal de sueño). Clase positiva: Alto.")
+```
+
+En el test el rendimiento apenas se resiente al pasar al Set B (Tabla 27). Los tres clasificadores no conservadores mantienen una Balanced Accuracy en torno a 0.80–0.82, que incluso sube un poco en el SVM (de 0.8112 a 0.8176) y en la logística (de 0.8067 a 0.8123), mientras que el XGBoost baja muy ligeramente (de 0.8146 a 0.8049). Solo el Random Forest, ya el más conservador con todas las variables, acusa más la pérdida (de 0.7346 a 0.6619), arrastrada por la sensibilidad, que cae de 0.5128 a 0.3718: sin las variables de regularidad se vuelve aún más conservador y detecta menos de cuatro de cada diez casos altos, con el F1 bajando en consecuencia (de 0.5797 a 0.4496). En los tres modelos no conservadores la sensibilidad y el F1 apenas se mueven. El AUC se mantiene alto en los cuatro, entre 0.8631 y 0.8923 en el Set B. Igual que en regresión, retirar la familia más circular de la respuesta no derrumba la capacidad de separar el SJL alto del bajo, lo que confirma que la clasificación tampoco se sostiene únicamente sobre variables tautológicas. 
+
+---
+
+# 6 · Selección de variables 
+
+Una vez visto que el Set B conserva casi todo el rendimiento sin la familia circular del sueño, se toma como conjunto de referencia y se busca dentro de él el subconjunto suficiente de predictores, con tres ventajas, modelos más parsimoniosos, mejor interpretabilidad y menos riesgo de sobreajuste. Se aplican dos métodos complementarios, siempre dentro de cada fold de validación cruzada para no contaminar la selección con el fold de validación:
+
+- **SBF** (*Selection By Filter*): filtro univariante. Evalúa cada predictor por separado con `gamScores` y devuelve un p-valor. Retiene los que superan p < 0.05. Es rápido pero ignora las interacciones.
+- **RFE** (*Recursive Feature Elimination*): *wrapper*. Entrena un Random Forest, ordena los predictores por importancia, elimina los peores y repite, quedándose con el tamaño que minimiza el RMSE de CV. Considera interacciones, a costa de más cómputo.
+
+```{r selvars-prep}
+# Matrices one-hot (sin intercepto) del Set B para la selección.
+Xtr_B <- model.matrix(SJL ~ ., data = df_train_B)[, -1]
+Xte_B <- model.matrix(SJL ~ ., data = df_test_B)[, -1]
+y_tr <- df_train_B$SJL
+y_te <- df_test_B$SJL
+
+# Parámetros de control de la selección.
+# ctrl_sbf no lleva 'seeds' a propósito: en caret 7.0-1 el sbf en paralelo falla
+# si se le pasan ("supplied seed is not a valid integer"). Su reproducibilidad se
+# fija con clusterSetRNGStream en la celda de entrenamiento. El rfe sí las admite.
+ctrl_sbf <- caret::sbfControl(
+  functions = caretSBF,
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3,
+  saveDetails = TRUE,
+  allowParallel = TRUE
+)
+ctrl_rfe <- caret::rfeControl(
+  functions = rfFuncs,
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3,
+  seeds = hacer_semillas(),
+  saveDetails = TRUE,
+  verbose = FALSE,
+  allowParallel = TRUE
+)
+sizes_B <- unique(c(5, 10, 15, 20, 30, 40, 60, 80, 100, 120, ncol(Xtr_B)))
+```
+
+```{r selvars-train, eval = FALSE}
+# SBF: cluster propio con RNG reproducible. clusterSetRNGStream siembra de forma
+# determinista el generador de los procesos del SBF; al ir en su propio cluster,
+# ese estado no se arrastra al del rfe/XGBoost (que usan las seeds de caret).
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+parallel::clusterSetRNGStream(cl, iseed = 0)
+set.seed(0)
+sbf_B <- caret::sbf(
+  x = Xtr_B,
+  y = y_tr,
+  sbfControl = ctrl_sbf
+)
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+saveRDS(sbf_B, file.path(MODELS_DIR, "sbf_reg_B.rds"))
+
+# RFE + XGBoost: cluster normal (RNG por defecto + seeds de caret)
+cl <- parallel::makePSOCKcluster(N_CORES)
+doParallel::registerDoParallel(cl)
+
+set.seed(0)
+rfe_B <- caret::rfe(
+  x = Xtr_B,
+  y = y_tr,
+  sizes = sizes_B,
+  rfeControl = ctrl_rfe,
+  metric = "RMSE"
+)
+saveRDS(rfe_B, file.path(MODELS_DIR, "rfe_reg_B.rds"))
+
+# XGBoost de referencia reentrenado sobre el subconjunto de cada método.
+set.seed(0)
+fit_xgb_sbfB <- caret::train(
+  x = Xtr_B[, sbf_B$optVariables, drop = FALSE],
+  y = y_tr,
+  method = "xgbTree",
+  tuneGrid = grid_xgb,
+  trControl = ctrl_reg,
+  metric = "RMSE",
+  verbosity = 0,
+  nthread = 1
+)
+saveRDS(fit_xgb_sbfB, file.path(MODELS_DIR, "fit_xgb_sbfB.rds"))
+
+set.seed(0)
+fit_xgb_rfeB <- caret::train(
+  x = Xtr_B[, rfe_B$optVariables, drop = FALSE],
+  y = y_tr,
+  method = "xgbTree",
+  tuneGrid = grid_xgb,
+  trControl = ctrl_reg,
+  metric = "RMSE",
+  verbosity = 0,
+  nthread = 1
+)
+saveRDS(fit_xgb_rfeB, file.path(MODELS_DIR, "fit_xgb_rfeB.rds"))
+
+parallel::stopCluster(cl)
+foreach::registerDoSEQ()
+```
+
+```{r selvars-load}
+sbf_B <- leer_cache("sbf_reg_B", "selvars-train")
+rfe_B <- leer_cache("rfe_reg_B", "selvars-train")
+fit_xgb_sbfB <- leer_cache("fit_xgb_sbfB", "selvars-train")
+fit_xgb_rfeB <- leer_cache("fit_xgb_rfeB", "selvars-train")
+```
+
+## 6.1 Subconjuntos seleccionados
+
+El filtro (SBF) y el *wrapper* (RFE) producen dos subconjuntos de tamaño muy distinto. El primer paso es cuantificar cuántas variables retiene cada uno, leyéndolo de los propios objetos que devuelven.
+
+```{r selvars-conteo}
+# Número de predictores que retiene cada método
+cat(sprintf("Set B (todas): %d predictores\n", ncol(Xtr_B)))
+cat(sprintf("SBF (filtro):  %d predictores\n", length(sbf_B$optVariables)))
+cat(sprintf("RFE (wrapper): %d predictores\n", length(rfe_B$optVariables)))
+```
+
+La Tabla 28 desglosa esos recuentos por familia de variable. Una buena parte se calcula sobre cada uno de los seis canales (sueño, luz, temperatura, TAP, intensidad y movimiento). De cada canal salen la hora central y el valor de sus ventanas de mayor y menor señal, las M5 y M10 de 5 y 10 horas de mayor señal y las L5 y L10 de menor, junto con los índices circadianos no paramétricos. El resto son los promedios diarios del sueño y su entorno y las variables globales (medias de canal, porcentajes, indicadores de hábitos y demografía).
+
+```{r selvars-composicion}
+# Clasifica cada predictor del Set B en una familia según su nombre
+familia <- function(v) dplyr::case_when(
+  grepl("^edad|^sexo|^imc|^altura|^peso", v) ~ "Demográficas y antropométricas",
+  grepl("^indicador", v) ~ "Indicadores binarios de hábitos",
+  grepl("^porcentaje", v) ~ "Porcentajes globales de actividad y luz",
+  grepl("^media_", v) ~ "Promedios del sueño y su entorno",
+  grepl("_media$", v) ~ "Media global del canal",
+  grepl("hora[lm](5|10)decimal$", v) ~ "Fase del ritmo (hora de M5/M10/L5/L10)",
+  grepl("_valor[lm](5|10)$", v) ~ "Valor en M5/M10/L5/L10",
+  grepl("_ra$|_ran$", v) ~ "Amplitud del ritmo (RA y NRA)",
+  grepl("_is$|_iv$|_sd$|_cfi$|_chs$|_p1p12$|g44", v) ~ "Estabilidad y fragmentación del ritmo",
+  TRUE ~ "Otras"
+)
+
+composicion <- tibble(Variable = colnames(Xtr_B)) |>
+  mutate(Familia = familia(Variable),
+         en_sbf = Variable %in% sbf_B$optVariables,
+         en_rfe = Variable %in% rfe_B$optVariables) |>
+  group_by(Familia) |>
+  summarise(`Set B` = n(),
+            SBF = sum(en_sbf),
+            RFE = sum(en_rfe), .groups = "drop") |>
+  arrange(desc(`Set B`))
+
+composicion |>
+  bind_rows(summarise(composicion,
+                      Familia = "Total",
+                      `Set B` = sum(`Set B`),
+                      SBF = sum(SBF),
+                      RFE = sum(RFE))) |>
+  estilo_kable(caption = "Tabla 28 · Composición de las dos selecciones por familia de variable. Para cada familia se indica cuántos predictores contiene el Set B y cuántos retienen el filtro (SBF) y el wrapper (RFE).")
+```
+
+```{r selvars-jaccard}
+# Solapamiento entre las dos selecciones: índice de Jaccard (intersección / unión).
+comun <- intersect(sbf_B$optVariables, rfe_B$optVariables)
+todas <- union(sbf_B$optVariables, rfe_B$optVariables)
+cat(sprintf("Variables comunes (intersección): %d\n", length(comun)))
+cat(sprintf("Variables en alguna (unión):      %d\n", length(todas)))
+cat(sprintf("Índice de Jaccard:                %.3f\n", length(comun) / length(todas)))
+```
+
+El SBF retiene 93 de los 144 predictores, un 65 %, así que es poco selectivo. Su filtro `gamScores` valora cada variable por separado y conserva toda la que supera una asociación univariante con el SJL en p < 0.05, y en el Set B muchas la superan. El recorte es además transversal, como muestra la Tabla 28, pues mantiene casi toda la fase del ritmo (22 de 24), la mayoría del valor en las ventanas M5/M10/L5/L10 (16 de 23) y la totalidad de la amplitud (12 de 12), y una porción de cada familia restante. El RFE, en cambio, se queda con solo 30, un 21 %, y reparte de forma muy distinta. Los dos métodos coinciden poco, con un índice de Jaccard de 0.255 (25 variables comunes sobre 98). El wrapper concentra su selección en la fase del ritmo (12 de sus 30 variables) y en los promedios del sueño y su entorno (7), conserva unos pocos marcadores de valor de ventana (4) y poda con fuerza los índices circadianos no paramétricos, de los que retiene 3 de 33 de estabilidad y fragmentación y 1 de 12 de amplitud. Las tres restantes hasta las 30 se reparten entre una media global de canal, un indicador de hábitos y una variable demográfica. Los porcentajes globales los descarta por completo. Conviene precisar que esos índices circadianos que sobreviven no son los del canal de sueño ligados a la estabilidad interdiaria (`sleep_is`, `sleep_sd`, `sleep_cfi` y `sleep_chs`), retirados en el Set B por circulares con el SJL, sino los de los demás canales (actividad, luz, temperatura, TAP y movimiento) y los del propio sueño no ligados a esa estabilidad.
+
+El RFE, además de contar variables, las ordena por la importancia con que el *wrapper* las fue descartando. Estas son las primeras del ranking, las que conservó hasta el final.
+
+```{r selvars-rfe-ranking}
+imp_rfe <- caret::varImp(rfe_B)
+imp_rfe <- imp_rfe[order(-imp_rfe$Overall), , drop = FALSE]
+for (i in 1:6) {
+  cat(sprintf("%d. %-26s %5.1f\n", i, rownames(imp_rfe)[i], imp_rfe$Overall[i]))
+}
+```
+
+```{r rfe-perfil-B, fig.width = 7, fig.height = 4.5, fig.cap = "Figura 24 · Perfil del RFE en el Set B: RMSE de validación cruzada (± una desviación típica) frente al número de predictores retenidos, en escala logarítmica. El círculo rojo marca el tamaño óptimo."}
+opt_B <- rfe_B$results |> filter(Variables == length(rfe_B$optVariables))
+
+ggplot(rfe_B$results, aes(Variables, RMSE)) +
+  geom_ribbon(aes(ymin = RMSE - RMSESD, ymax = RMSE + RMSESD), fill = HEADER, alpha = 0.18) +
+  geom_line(color = HEADER, linewidth = 0.9) +
+  geom_point(color = HEADER, size = 1.8) +
+  geom_point(data = opt_B, color = ACCENT, size = 4, shape = 21, stroke = 1.5, fill = NA) +
+  scale_x_continuous(trans = "log10") +
+  labs(x = "Nº de predictores (escala log)", y = "RMSE (CV ± SD)",
+       title = "Perfil del RFE · Set B",
+       subtitle = sprintf("Tamaño óptimo: %d predictores de %d", length(rfe_B$optVariables), ncol(Xtr_B)))
+```
+
+La Figura 24 muestra por qué el *wrapper* fija ese tamaño. El RMSE de validación cruzada cae deprisa al añadir las primeras variables y se aplana enseguida, de modo que dejar de podar antes de agotar el conjunto no cuesta error. El óptimo se sitúa en 30 predictores, una reducción del 79 % frente a los 144 del Set B, y a partir de ahí la curva ya no mejora de forma apreciable.
+
+En conjunto, el filtro y el *wrapper* responden a lógicas opuestas. El SBF, univariante, conserva casi todo lo que correlaciona con el SJL y reparte el recorte por todas las familias. El RFE, multivariante, destila un núcleo compacto de 30 marcadores dominado por la fase del ritmo y los promedios del sueño y su entorno, las mismas familias que ya encabezaban la importancia del modelo.
+
+## 6.2 Rendimiento (validación cruzada y test)
+
+El rendimiento de cada subconjunto se mide reentrenando únicamente el XGBoost, el modelo de referencia que lidera en el Set B, de modo que la comparación aísla el efecto de la selección sin mezclarlo con un cambio de algoritmo.
+
+```{r selvars-rendimiento}
+fila_sel <- function(modelo, nvars, fit, nd) {
+  p <- caret::getTrainPerf(fit)
+  m <- caret::postResample(predict(fit, nd), y_te)
+  tibble(Modelo = modelo, Variables = nvars,
+         `R² (CV)` = round(p$TrainRsquared, 4),
+         `RMSE (CV)` = round(p$TrainRMSE, 4),
+         `MAE (CV)` = round(p$TrainMAE, 4),
+         `R² (test)` = round(m[["Rsquared"]], 4),
+         `RMSE (test)` = round(m[["RMSE"]], 4),
+         `MAE (test)` = round(m[["MAE"]], 4))
+}
+
+bind_rows(
+  fila_sel("XGBoost (todas)", ncol(Xtr_B), fit_xgb_setB, df_test_B),
+  fila_sel("XGBoost · SBF", length(sbf_B$optVariables), fit_xgb_sbfB, Xte_B[, sbf_B$optVariables]),
+  fila_sel("XGBoost · RFE", length(rfe_B$optVariables), fit_xgb_rfeB, Xte_B[, rfe_B$optVariables])
+) |>
+  estilo_kable(caption = "Tabla 29 · Rendimiento de XGBoost en el Set B con todas las variables frente a los subconjuntos de SBF y RFE, en validación cruzada y en el test.")
+```
+
+En validación cruzada el subconjunto del RFE (30 variables) iguala prácticamente al modelo con todas (R² de 0.4188 frente a 0.4201), mientras que el de SBF queda algo por debajo (0.4063). En el test ambos quedan por debajo del 0.4757 del completo, el RFE en 0.4577 y el SBF algo más abajo, en 0.4510. La selección no mejora el rendimiento, pero el RFE consigue un modelo de solo 30 predictores que rinde como el completo, mientras que el filtro, pese a quedarse con 93, pierde algo más.
+
+```{r selvars-diff}
+# Contraste pareado de los tres modelos del Set B.
+res_sel <- resamples(list(Completo = fit_xgb_setB, SBF = fit_xgb_sbfB, RFE = fit_xgb_rfeB))
+summary(diff(res_sel))
+```
+
+Para saber si esas diferencias son reales o ruido, se contrastan los tres modelos sobre los mismos 15 folds. El completo y el RFE resultan indistinguibles, con p ≈ 1 en las tres métricas, de modo que reducir a 30 predictores con el wrapper no cuesta un rendimiento detectable. El subconjunto del SBF, en cambio, sí se separa del completo de forma significativa, aunque por un margen pequeño (p entre 0.011 y 0.019 según la métrica), y queda por debajo del RFE en el MAE (p = 0.004). En validación cruzada, por tanto, el wrapper iguala al modelo completo, mientras que el filtro, pese a conservar 93 variables, pierde algo de rendimiento de forma consistente entre folds.
+
+El test apunta en la misma dirección. La caída de R² frente al completo (Tabla 29) es de pocas centésimas en ambos, algo menor en el RFE (0.4577 frente a 0.4757) que en el SBF (0.4510), de modo que también en el test el modelo reducido de 30 predictores del RFE rinde de forma equivalente al completo, mientras que el filtro queda un poco más atrás.
+
+## 6.3 Variables del modelo parsimonioso
+
+```{r selvars-ranking, fig.width = 9, fig.height = 5, fig.cap = "Figura 25 · Importancia de las 15 variables más influyentes del XGBoost entrenado sobre el subconjunto de 30 predictores del RFE, el modelo parsimonioso del Set B."}
+importancia_top(fit_xgb_rfeB) |>
+  plot_importancia("Variables más relevantes · modelo parsimonioso (RFE) del Set B",
+                   fill = ACCENT)
+```
+
+```{r rfe-imp-shap-combo, fig.width = 12, fig.height = 5.6, fig.cap = "Figura para el cuerpo de la memoria: (a) importancia y (b) valores SHAP del XGBoost del modelo parsimonioso (los 30 predictores del RFE sobre el Set B)."}
+p_imp_rfe <- importancia_top(fit_xgb_rfeB) |>
+  plot_importancia(NULL, fill = ACCENT) + theme_tfm(11)
+sv_rfeB <- shap_xgb_tree(fit_xgb_rfeB, df_test_B, "SJL")
+p_shap_rfe <- shap_legend_es(shapviz::sv_importance(sv_rfeB, kind = "beeswarm", max_display = 15)) +
+  labs(x = "Contribución SHAP al SJL predicho (h)", y = NULL) +
+  theme_tfm(11)
+(p_imp_rfe | p_shap_rfe) +
+  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
+    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 13)))
+```
+
+Las 30 variables del modelo parsimonioso pertenecen a las mismas familias que ya dominaban el Set B completo. Encabezan el movimiento en las ventanas de menor señal (`tiempomov_valorl5` y `tiempomov_valorl10`) y la fase del ritmo (`sleep_horal5decimal` y `sleep_horal10decimal`), seguidos de la intensidad de la actividad y de los promedios del sueño y su entorno (la actividad durante el sueño y en las horas previas, `media_tiempoactividadensueno` y `media_actividad2hantessueno`), con la edad como única variable demográfica entre las quince más influyentes. Confirma que la capacidad predictiva genuina, una vez fuera la circularidad, descansa en un núcleo estable de marcadores de movimiento, fase, actividad y sueño.
+
+Varias de las ventanas más influyentes no son las que por convención describen su canal. Es consecuencia de haber incorporado la batería no paramétrica completa, sin pre-seleccionar para cada variable la ventana que la caracteriza, con el fin de no descartar señal a priori. El comportamiento resultante es interpretable. En el tiempo en movimiento, la ventana de 5 h de menor actividad (`tiempomov_valorl5`), que aísla el núcleo del sueño nocturno, encabeza la importancia por ganancia y su SHAP se extiende más que el de la ventana de 10 h (`tiempomov_valorl10`), que ensancha ese tramo hasta mezclar el sueño con las horas contiguas. Y la variable que más mueve la predicción, la hora del tramo de menor sueño (`sleep_horal5decimal`), es un marcador de fase y no una cantidad de sueño diurno, ya que su contribución crece de forma monótona con la hora del tramo, de modo que un mínimo de sueño más tardío, propio de un ritmo retrasado, eleva el SJL predicho.
+
+```{r shap-cifras-rfe}
+# Magnitud y direccion SHAP de las tres variables que encabezan el modelo parsimonioso.
+# |SHAP| medio = contribucion media (h); rho = Spearman(valor, SHAP), positivo si los valores
+# altos elevan el SJL predicho; contribucion maxima = mayor SHAP positivo observado.
+shap_dir <- function(sv, col) {
+  v <- sv$X[, col]; s <- sv$S[, col]
+  tibble::tibble(Variable = col,
+                 `|SHAP| medio (h)` = round(mean(abs(s)), 3),
+                 `ρ Spearman` = round(cor(v, s, method = "spearman"), 2),
+                 `Contrib. máx. (h)` = round(max(s), 2))
+}
+dplyr::bind_rows(lapply(
+  c("Sueño hora L5", "Tiempo movimiento L5", "Tiempo movimiento L10"),
+  function(cl) shap_dir(sv_rfeB, cl))) |>
+  estilo_kable(caption = "Tabla 30 · Magnitud y dirección SHAP de las tres variables más influyentes del modelo parsimonioso (test, n = 536). El |SHAP| medio es la contribución media en horas; ρ es la correlación de Spearman entre el valor de la variable y su SHAP, positiva cuando los valores altos elevan el SJL predicho; la contribución máxima es el mayor SHAP positivo observado.")
+```
+
+---
+
+# 7 · Síntesis y conclusiones
+
+ Se reúnen aquí los hallazgos principales, su lectura conjunta, las limitaciones del trabajo y las líneas de continuación.
+
+## 7.1 Hallazgos principales
+
+**El espacio de predictores es intrínsecamente multidimensional.** El PCA no encuentra un eje dominante, coherente con la naturaleza multimodal del dato clínico, y la dimensionalidad se reparte entre muchas direcciones. Aun así, dos ejes capturan la relación con el SJL: el componente de más actividad frente a sueño consolidado (PC2) es el más correlacionado con el SJL continuo, mientras que el de robustez del ritmo (PC1) es el que mejor separa la clase clínica alta. Los centros de las clases se desplazan, pero la frontera es gradual y sin cortes netos, consistente con una gradación continua del fenómeno más que con grupos naturalmente separados.
+
+**El problema es abordable.** La regresión explica cerca de la mitad de la variabilidad del SJL en sujetos no vistos (XGBoost de referencia, R² de 0.4875, RMSE de 0.7212 h y MAE de 0.5016 h en test, esto es, un error típico de unos 30 min según el MAE, más representativo por ser robusto a la cola de valores altos, y de unos 43 min según el RMSE, que penaliza más los casos extremos), y la clasificación del riesgo clínico (SJL ≥ 2 h) discrimina de bueno a excelente (AUC de 0.9056, Balanced Accuracy de 0.8146 y F1 de 0.5837), aunque con un valor predictivo positivo moderado por la baja prevalencia. Los cuatro algoritmos quedan muy próximos en las dos tareas, indicio de que el límite lo impone la información que contiene la actigrafía y no la sofisticación del modelo.
+
+**La señal es esencialmente lineal y aditiva.** El XGBoost, no lineal y de referencia en datos tabulares, apenas mejora a los modelos lineales regularizados (Elastic Net queda a ≈ 0.055 de R² en regresión y la logística incluso lidera la Balanced Accuracy en clasificación), y queda muy cerca del SVM; el Random Forest acompaña en regresión y en discriminación, pero es más conservador al clasificar. Las no linealidades aportan poca ganancia, así que el XGBoost se elige como referencia por liderar o igualar en las métricas clave, por su importancia interpretable y por coincidir en las dos tareas.
+
+**El predictor dominante es en parte circular, y la señal genuina persiste al retirarlo.** La variable más influyente del modelo completo es la estabilidad interdiaria del sueño (`sleep_is`) que, junto con los índices que la contienen por fórmula, miden la regularidad del sueño día a día y solapan por construcción con la irregularidad entre tipos de día que define el SJL. Al retirar esa familia (Set B), el rendimiento apenas baja (R² de test de 0.4757 frente a 0.4875), así que la predicción no descansa solo en esa circularidad. Una vez fuera, el núcleo genuino lo forman marcadores continuos de actigrafía: el movimiento en las ventanas de menor señal, la fase del ritmo, la intensidad de la actividad y los promedios del sueño y su entorno.
+
+**La selección de variables aporta parsimonia, no rendimiento.** Ni el filtro (SBF, 93 de 144 predictores) ni el wrapper (RFE, 30 de 144) mejoran la predicción, pero el RFE la conserva con solo 30 predictores, un modelo indistinguible del completo en validación cruzada, dominado por las mismas familias de movimiento, fase y sueño. Así, el grueso de la señal se concentra en un núcleo moderado de variables, de modo que el valor de la selección es la parsimonia y la interpretabilidad.
+
+## 7.2 Lectura conjunta de las dos tareas
+
+Las dos formulaciones responden a preguntas clínicas distintas sobre el mismo fenómeno. La regresión estima cuánto SJL cabe esperar en un sujeto, útil para la investigación poblacional. La clasificación decide si un sujeto está en riesgo de SJL clínicamente relevante, el formato propio de una decisión de cribado.
+
+Ambas se apoyan en lo mismo. La mayoría de los predictores más influyentes (11 de los 15 principales) coinciden en las dos tareas, de modo que predecir el valor continuo o clasificar el riesgo descansa, en lo esencial, sobre los mismos marcadores de actigrafía. 
+
+Como herramienta de cribado, el clasificador sirve mejor para descartar que para confirmar. Con una prevalencia de SJL alto del 14 %, el valor predictivo positivo se queda moderado (en torno a 0.47 en el modelo de referencia), porque con una clase tan minoritaria incluso un buen clasificador genera bastantes falsos positivos. El valor predictivo negativo, en cambio, es alto (cercano a 0.96), de modo que una predicción de «Bajo» es más fiable. El modelo señala así a quién conviene mirar con más detalle, sin pretender un diagnóstico, y el corte de decisión podría desplazarse hacia mayor sensibilidad si la prioridad clínica fuera no perder ningún caso.
+
+Conviene situar el alcance de cada tarea. La regresión no llega a fijar el SJL exacto de un individuo, pero esa imprecisión nace de una variable respuesta pequeña y ruidosa por naturaleza, no de una limitación del enfoque. La clasificación tampoco escapa a ese ruido, sino que plantea una pregunta más gruesa, de umbral, que lo tolera mejor y por eso exhibe métricas aparentemente más altas. De ahí que el orden adoptado en el capítulo sea tomar la regresión como análisis principal, por conservar toda la información continua y graduada del fenómeno, y la clasificación como complemento de lectura clínica.
+
+## 7.3 Limitaciones
+
+Dos rasgos del estudio son decisiones de diseño, no carencias, aunque acotan el alcance de las conclusiones. El enfoque es transversal. Aunque la base de datos dispone de seguimiento longitudinal, al ser un estudio poblacional se toma la visita basal de cada sujeto, de modo que los modelos son predictivos y no causales. Con una sola observación por persona, explican la variabilidad entre individuos (qué diferencia a quienes tienen más o menos SJL), pero no la variabilidad dentro de un mismo individuo (cómo evoluciona su SJL a lo largo del tiempo). Y la cohorte se restringe a la población sana con datos completos (`r nrow(df_ml)` sujetos), excluyendo la patología registrada para que no actúe como confusor, lo que enfoca la pregunta en la población general.
+
+Sobre el umbral de clasificación, no hay un corte universalmente establecido para el SJL alto. El de 2 h, presente en parte de la literatura, se adopta aquí para plantear la tarea de clasificación, pero el SJL es por naturaleza una magnitud continua y graduada, que la regresión modela sin dicotomizar. Otro umbral cambiaría la prevalencia y el equilibrio de las métricas de clasificación.
+
+## 7.4 Vías de futuro
+
+- **Aplicación y validación clínica en población con patología.** Los modelos se han entrenado sobre sujetos sanos. Su transportabilidad a cohortes con patología queda como trabajo futuro, que exigiría validar el rendimiento en esos perfiles antes de cualquier aplicación.
+- ***Deep learning* sobre la señal cruda.** Sobre datos tabulares como los empleados en este trabajo, con predictores ya resumidos y unos pocos miles de sujetos, previsiblemente una red neuronal tendería a sobreajustar y perdería interpretabilidad sin una ganancia clara [18, 19], porque el rendimiento lo limita la señal disponible y no el algoritmo. Por eso una vía más prometedora consistiría en aplicar modelos secuenciales (CNN 1D, LSTM o Transformers) directamente sobre la serie de actigrafía minuto a minuto, capaces de aprender patrones circadianos que el resumen diario no captura. 
+- **Diseño longitudinal.** La base de datos dispone de visitas repetidas que aquí no se han empleado, al tomarse la basal para el estudio poblacional. Un planteamiento longitudinal permitiría modelar la evolución del SJL en el tiempo y, con modelos jerárquicos o mixtos, separar la variabilidad intra de la interindividual.
+
+---
+
+# 8 · Referencias
+
+1. Wittmann M, Dinich J, Merrow M, Roenneberg T. Social jetlag: misalignment of biological and social time. Chronobiol Int. 2006;23(1-2):497-509. doi:10.1080/07420520500545979
+2. Martínez-Lozano N, Barraco GM, Rios R, Ruiz MJ, Tvarijonaviciute A, Fardy P, et al. Evening types have social jet lag and metabolic alterations in school-age children. Sci Rep. 2020;10(1):16747. doi:10.1038/s41598-020-73297-5
+3. Roenneberg T, Pilz LK, Zerbini G, Winnebeck EC. Chronotype and social jetlag: a (self-)critical review. Biology. 2019;8(3):54. doi:10.3390/biology8030054
+4. Kaiser HF. An index of factorial simplicity. Psychometrika. 1974;39(1):31-36. doi:10.1007/BF02291575
+5. Satopää V, Albrecht J, Irwin D, Raghavan B. Finding a "kneedle" in a haystack: detecting knee points in system behavior. 31st Int. Conf. on Distributed Computing Systems Workshops (ICDCSW). 2011:166-171. doi:10.1109/ICDCSW.2011.20
+6. Horn JL. A rationale and test for the number of factors in factor analysis. Psychometrika. 1965;30(2):179-185. doi:10.1007/BF02289447
+7. Kuhn M. Building predictive models in R using the caret package. J Stat Softw. 2008;28(5):1-26. doi:10.18637/jss.v028.i05
+8. Breiman L. Random forests. Mach Learn. 2001;45(1):5-32. doi:10.1023/A:1010933404324
+9. Wright MN, Ziegler A. ranger: A fast implementation of random forests for high dimensional data in C++ and R. J Stat Softw. 2017;77(1):1-17. doi:10.18637/jss.v077.i01
+10. Hastie T, Tibshirani R, Friedman J. The Elements of Statistical Learning: Data Mining, Inference, and Prediction. 2nd ed. New York: Springer; 2009. doi:10.1007/978-0-387-84858-7
+11. Cortes C, Vapnik V. Support-vector networks. Mach Learn. 1995;20(3):273-297. doi:10.1007/BF00994018
+12. Karatzoglou A, Smola A, Hornik K, Zeileis A. kernlab — an S4 package for kernel methods in R. J Stat Softw. 2004;11(9):1-20. doi:10.18637/jss.v011.i09
+13. Zou H, Hastie T. Regularization and variable selection via the elastic net. J R Stat Soc Series B Stat Methodol. 2005;67(2):301-320. doi:10.1111/j.1467-9868.2005.00503.x
+14. Friedman J, Hastie T, Tibshirani R. Regularization paths for generalized linear models via coordinate descent. J Stat Softw. 2010;33(1):1-22. doi:10.18637/jss.v033.i01
+15. Chen T, Guestrin C. XGBoost: A scalable tree boosting system. En: Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and Data Mining. 2016. p. 785-794. doi:10.1145/2939672.2939785
+16. Strobl C, Boulesteix AL, Zeileis A, Hothorn T. Bias in random forest variable importance measures: illustrations, sources and a solution. BMC Bioinformatics. 2007;8:25. doi:10.1186/1471-2105-8-25
+17. Lundberg SM, Lee SI. A unified approach to interpreting model predictions. Advances in Neural Information Processing Systems (NeurIPS). 2017;30:4765-4774.
+18. Grinsztajn L, Oyallon E, Varoquaux G. Why do tree-based models still outperform deep learning on typical tabular data? En: Advances in Neural Information Processing Systems (NeurIPS). 2022;35:507-520.
+19. Shwartz-Ziv R, Armon A. Tabular data: Deep learning is not all you need. Information Fusion. 2022;81:84-90. doi:10.1016/j.inffus.2021.11.011
+
+
+---
+
+## Entorno de ejecución
+
+Versiones de R y de los paquetes con las que se generó este capítulo, para reproducibilidad exacta de los resultados.
+
+```{r session-info}
+sessionInfo()
+```

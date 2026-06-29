@@ -1,0 +1,2930 @@
+---
+title: "Análisis del Jet Lag Social"
+subtitle: "TFM · Máster en Bioinformática · Universidad de Murcia · Curso 2025/26"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: show
+    theme:
+      bootswatch: flatly
+      version: 4
+    highlight: tango
+    df_print: paged
+    fig_caption: true
+    self_contained: true
+    css: "tfm_style.css"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5,
+  dpi = 300,
+  dev = c("ragg_png", "cairo_pdf"),  # ragg para que las figuras usen la fuente del sistema (Arial)
+  fig.path = "outputs/stats/figures/",
+  cache = FALSE
+)
+options(scipen = 999, digits = 4)
+```
+
+# Contexto
+
+Este documento continúa el pipeline iniciado en `preprocesamiento.ipynb` y se centra en la **caracterización descriptiva e inferencial del Jet Lag Social (SJL)** sobre la cohorte resultante (`df_cohorte_con_sjl.csv`). 
+
+### Estructura
+
+0. **Configuración** — paquetes, paleta y tema gráfico, helpers y carga de datos.
+1. **Caracterización de la cohorte** — demografía, IMC, cronotipo y visualización gráfica.
+2. **Análisis descriptivo** — descriptivos y coherencia entre las tres variantes del SJL con matriz de correlación; distribución y verificación de la (no) normalidad sobre la variante clásica; implicaciones para los métodos inferenciales (TCL y elección paramétrico / no paramétrico).
+3. **Horarios de sueño y diferencias laborable / libre** — descriptivos de SO, SE, SD y MS por tipo de día (Wilcoxon pareado + r biserial de rangos); estratificación por SJL ≥ 2 h con Mann-Whitney y Cliff's δ; línea temporal del sueño.
+4. **SJL y edad** — relación continua (regresión lineal + Spearman) y categorización por franjas etarias (Kruskal-Wallis + Dunn-Holm + Cliff δ por par).
+5. **SJL y sexo** — Mann-Whitney + Cliff's δ con IC 95 % asintótico, ajustado por edad mediante rank-ANCOVA de Quade.
+6. **SJL y cronotipo** — Kruskal-Wallis + Dunn-Holm + Cliff δ entre las cinco categorías.
+7. **SJL e IMC** — relación continua (regresión lineal + Spearman, con Spearman parcial ajustada por edad y sexo), categorización OMS (Kruskal-Wallis + ε²) y comparación dicotómica del IMC entre sujetos con SJL ≥ 2 h y < 2 h (Mann-Whitney + Cliff's δ con IC 95 %).
+8. **SJL y variables circadianas-no paramétricas** — correlaciones de Spearman crudas y parciales (ajustadas por edad y sexo) con corrección Holm; forest plot; matriz de correlación del top; análisis aparte de los indicadores de salud circadiana.
+9. **SJL y patologías** — regresión logística del SJL frente a patología agregada, del sueño y oncológica; tres modelos jerárquicos por variable respuesta.
+10. **Resumen y próximos pasos**.
+
+### Decisiones metodológicas
+
+- **Tendencia central**: mediana [IQR] por defecto para el SJL dado el sesgo a la derecha característico [1, 2]; media ± DE para variables demográficas (Tabla 1) por convención biomédica.
+- **Inferencia bivariada**: no paramétrica (Mann-Whitney, Kruskal-Wallis + Dunn, Spearman) para no asumir normalidad sobre el SJL.
+- **Tamaños de efecto**: cada contraste reporta el tamaño de efecto junto al p-valor, siguiendo la recomendación de la APA Task Force on Statistical Inference [3] reforzada en sucesivas ediciones del APA Publication Manual y las guías editoriales biomédicas (ICMJE, STROBE): el p depende del tamaño muestral y no cuantifica la magnitud del efecto, así que la interpretación clínica debe leerse sobre el tamaño de efecto y, cuando proceda, su IC. Métricas utilizadas: Cliff's δ para comparaciones de 2 grupos no paramétricas; ε² para Kruskal-Wallis; ρ de Spearman para asociaciones continuas; OR para regresión logística.
+- **Intervalos de confianza del tamaño de efecto**: se reportan cuando la inferencia descansa explícitamente en ellos (p. ej. para argumentar ausencia de asociación mediante un IC que cruza el cero). En análisis exploratorios sobre múltiples variables y en comparaciones post-hoc por pares se reporta únicamente el estimador puntual junto al p (ajustado cuando proceda). El método de cálculo es asintótico (transformación de Fisher de `effectsize`) por defecto y bootstrap percentil (`boot::boot`, B = 1000) en las baterías de §8.3 y §8.6, donde se indica explícitamente en el texto.
+- **Corrección por comparaciones múltiples**: Holm-Bonferroni en baterías de correlaciones y post-hoc de Dunn.
+- **Estrategia de ajuste**:
+    - **Confusores primarios**: edad y sexo. La edad es un confusor genuino del SJL (descenso etario marcado, sección 4) presente en cualquier variable respuesta plausible; el sexo se incluye por convención biomédica aun cuando no se asocia con el SJL en esta cohorte (sección 5). El modelo principal de cada análisis multivariable es el ajustado por edad y sexo.
+    - **Cronotipo como análisis de sensibilidad**, no como ajuste primario. Cronotipo y SJL están fuertemente correlacionados por construcción (el cronotipo medido vía MSF entra en el cálculo del SJL), lo que sitúa al cronotipo en algún punto del continuo *confusor ↔ componente* del propio SJL. Siguiendo la convención de la literatura [4, 5], el cronotipo se incluye en un modelo de sensibilidad complementario, no en el principal: si la asociación SJL → variable respuesta sobrevive al ajuste por cronotipo, refuerza que el SJL aporta señal más allá del cronotipo subyacente; si desaparece, indica que el efecto del SJL es indistinguible del que se atribuiría al cronotipo.
+    - **No se ajusta por mediadores potenciales** (TTS = tiempo total de sueño, IMC cuando la variable respuesta no es IMC, indicadores de calidad de sueño). El SJL puede causar mal descanso (SJL → TTS) o desajuste metabólico (SJL → IMC), de modo que estas variables están en la cadena causal río abajo del SJL. Incluirlas como predictores rompería el camino causal y subestimaría el efecto del SJL (sesgo post-tratamiento / sobreajuste), no controlaría confusión. Esta posición está discutida en la literatura, donde algunos estudios sí ajustan por TTS [5]; aquí se opta por la lectura más conservadora desde el punto de vista del análisis causal.
+
+---
+
+# 0 · Configuración
+
+## 0.1 Paquetes
+
+```{r libraries}
+# Manipulación de datos y gráficos
+library(tidyverse)      # dplyr, tidyr, readr, ggplot2, purrr, stringr, tibble
+library(patchwork)      # composición multi-panel de ggplots (§2)
+library(scales)         # formateadores de ejes (pretty_breaks, percent_format)
+library(ggtext)         # element_markdown: renderiza HTML (subíndices) en ggplot
+
+# Estadística
+library(rstatix)        # kruskal_test y dunn_test (§4, §6, §7)
+library(effectsize)     # cliffs_delta y rank_epsilon_squared (Cliff δ, ε²)
+library(ppcor)          # pcor.test usado por partial_spearman (§0.3)
+
+# Tablas
+library(kableExtra)     # estética de tablas en HTML
+library(knitr)
+
+# Defensa frente a enmascaramientos futuros: garantiza que `select` y `filter`
+# resuelven a las versiones de dplyr aunque algún paquete posterior los
+# redefina (stats::filter, MASS::select, etc.).
+select <- dplyr::select
+filter <- dplyr::filter
+```
+
+## 0.2 Paleta, helpers visuales y tema `ggplot2`
+
+```{r theme}
+HEADER <- "#1a2940"
+ACCENT <- "#b03a2e"
+REF <- "#555555"
+COLOR_SJL <- "#2c3e85"
+COLOR_SJL_SC <- "#1f8a70"
+COLOR_SJL_J <- "#c46f1f"
+
+# Etiquetas de las variantes del SJL con subíndices HTML. Renderizan en:
+#   · kable con escape = FALSE (lo hace `estilo_kable`)
+#   · ggplot con element_markdown (configurado en theme_tfm)
+VAR_LABEL <- c(
+  SJL = "SJL",
+  SJL_sc = "SJL<sub>sc</sub>",
+  SJL_J = "SJL<sub>J</sub>",
+  SJL_signed = "SJL (signo)",
+  SJL_sc_signed = "SJL<sub>sc</sub> (signo)",
+  SJL_J_signed = "SJL<sub>J</sub> (signo)"
+)
+COLOR_BY_VAR <- c(SJL = COLOR_SJL, SJL_sc = COLOR_SJL_SC, SJL_J = COLOR_SJL_J)
+
+# Paleta secuencial para grupos etarios
+PAL_EDAD <- c(
+  "13-17" = "#9ECAE1",
+  "18-24" = "#6BAED6",
+  "25-40" = "#4292C6",
+  "41-50" = "#2171B5",
+  "51-64" = "#08519C",
+  "≥65" = "#08306B"
+)
+
+# Paleta para sexo (boxplots, pirámide poblacional, etc.)
+PAL_SEXO <- c("Mujer" = "#c4708a", "Hombre" = "#2c3e85")
+
+# Paleta para estado de salud (sanos vs pacientes)
+PAL_SALUD <- c("Sanos" = "#1f8a70", "Pacientes" = "#b03a2e")
+
+# Paleta para cronotipo. Extremos en colores opuestos
+# cálido/frío con neutro en el centro: refleja la naturaleza bipolar
+# vespertino, matutino con el indefinido como punto medio
+PAL_CRONO <- c(
+  "Cronotipo vespertino extremo" = "#A50026",
+  "Cronotipo vespertino" = "#F46D43",
+  "Cronotipo indefinido" = "#878787",
+  "Cronotipo matutino" = "#74ADD1",
+  "Cronotipo matutino extremo" = "#313695"
+)
+
+# Paleta secuencial para IMC (categorías OMS).
+# La intensidad creciente refuerza la severidad clínica (de bajo peso a obesidad)
+PAL_IMC <- c(
+  "Bajo peso" = "#FED976",
+  "Normopeso" = "#FEB24C",
+  "Sobrepeso" = "#FC4E2A",
+  "Obesidad" = "#B10026"
+)
+
+# Paleta para los tres ajustes del forest plot de correlación parcial (sección 8.3)
+PAL_AJUSTE <- c(
+  "Crudo" = COLOR_SJL,
+  "Parcial (edad + sexo)" = ACCENT,
+  "Parcial (edad + sexo + cronotipo)" = COLOR_SJL_J
+)
+SHAPE_AJUSTE <- c(
+  "Crudo" = 16,
+  "Parcial (edad + sexo)" = 17,
+  "Parcial (edad + sexo + cronotipo)" = 18
+)
+
+# Paleta para los bloques de indicadores de salud circadiana (sección 8.6)
+PAL_BLOQUE <- c(Luz = "#e0a02d", Actividad = "#2b8a4b", "Sueño" = "#3f51b5")
+
+# Tema base ggplot. base_family = "Arial" para homogeneidad con el cuerpo de la
+# memoria (Arial 10); requiere el device ragg_png (configurado en el chunk setup).
+theme_tfm <- function(base_size = 13) {
+  theme_minimal(base_size = base_size, base_family = "Arial") +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = "grey90", linetype = "dotted"),
+      panel.background = element_blank(),
+      axis.line = element_line(color = "grey40", linewidth = 0.3),
+      axis.title = element_markdown(color = HEADER, size = base_size),
+      axis.title.x = element_markdown(color = HEADER, size = base_size),
+      axis.title.y = element_markdown(color = HEADER, size = base_size),
+      axis.text = element_markdown(color = "grey20", size = base_size - 1),
+      plot.title = element_markdown(color = HEADER, face = "bold", size = base_size + 2),
+      plot.subtitle = element_markdown(color = "grey30", size = base_size),
+      plot.caption = element_text(color = "grey40", size = base_size - 1),
+      legend.background = element_blank(),
+      legend.key = element_blank(),
+      legend.text = element_markdown(color = "grey20", size = base_size - 1),
+      legend.title = element_markdown(color = HEADER, size = base_size),
+      strip.background = element_rect(fill = "grey95", color = NA),
+      strip.text = element_markdown(color = HEADER, face = "bold", size = base_size)
+    )
+}
+theme_set(theme_tfm())
+
+# Helper de Styler para kable
+# Directorio de volcado de tablas (paralelo a las figuras).
+TABLES_DIR <- "outputs/stats/tables"
+dir.create(TABLES_DIR, recursive = TRUE, showWarnings = FALSE)
+.n_tabla <- 0L
+
+# Vuelca el contenido de una tabla a outputs/.../tables/. Falla en silencio
+# para no interrumpir el render si una tabla no fuera serializable.
+guardar_tabla <- function(tbl, caption = NULL) {
+  .n_tabla <<- .n_tabla + 1L
+  slug <- if (!is.null(caption)) {
+    s <- tolower(gsub("[^A-Za-z0-9]+", "_", gsub("<[^>]+>", "", caption)))
+    substr(gsub("^_+|_+$", "", s), 1, 60)
+  } else "tabla"
+  base <- file.path(TABLES_DIR, sprintf("%02d_%s", .n_tabla, slug))
+  # CSV para revisar y pegar en Word durante la redacción.
+  try(write.csv(as.data.frame(tbl), paste0(base, ".csv"),
+                row.names = FALSE, fileEncoding = "UTF-8"), silent = TRUE)
+  # .tex (booktabs) para \input{} al maquetar la versión final en LaTeX.
+  try(writeLines(as.character(kbl(tbl, format = "latex", booktabs = TRUE,
+                                  caption = caption)),
+                 paste0(base, ".tex")), silent = TRUE)
+}
+
+estilo_kable <- function(tbl, caption = NULL) {
+  guardar_tabla(tbl, caption)
+  kbl(tbl, caption = caption, escape = FALSE) |>
+    kable_styling(
+      bootstrap_options = c("striped", "hover", "condensed"),
+      full_width = TRUE,
+      position = "center",
+      font_size = 13
+    ) |>
+    row_spec(0, background = HEADER, color = "white", bold = TRUE)
+}
+
+# Renderiza una tabla jerárquica con cabeceras intermedias destacadas.
+# El dataframe debe traer dos columnas de control: `es_header` con TRUE en
+# las filas de encabezado (fondo gris claro) y `es_nivel` con TRUE en las
+# filas de nivel indentado (cursiva con sangría). Ambas se descartan antes
+# de renderizar. `col_jerarquica` es el nombre de la columna sobre la que
+# se aplican las clases HTML de indentación/negrita.
+kable_jerarquica <- function(df, col_jerarquica, caption,
+                             col_names = NULL, align = NULL) {
+  guardar_tabla(df |> dplyr::select(-dplyr::any_of(c("es_header", "es_nivel"))), caption)
+  idx_header <- which(df$es_header)
+
+  df[[col_jerarquica]] <- ifelse(
+    df$es_nivel,
+    sprintf("<span class='jerarq-nivel'>%s</span>", df[[col_jerarquica]]),
+    sprintf("<span class='jerarq-var'>%s</span>", df[[col_jerarquica]])
+  )
+  df_render <- df |> dplyr::select(-dplyr::any_of(c("es_header", "es_nivel")))
+
+  args <- list(df_render, escape = FALSE, caption = caption)
+  if (!is.null(align)) args$align <- align
+  if (!is.null(col_names)) args$col.names <- col_names
+
+  do.call(kbl, args) |>
+    kable_styling(
+      bootstrap_options = c("striped", "hover", "condensed"),
+      full_width = TRUE, position = "center", font_size = 13
+    ) |>
+    row_spec(0, background = HEADER, color = "white", bold = TRUE) |>
+    row_spec(idx_header, background = "#eef2f7", bold = FALSE)
+}
+```
+
+## 0.3 Helpers estadísticos y de formato
+
+```{r helpers}
+# Formatos numéricos
+
+fmt_iqr <- function(x, dec = 2) {
+  q <- quantile(x, c(0.25, 0.5, 0.75))
+  sprintf("%.*f [%.*f, %.*f]", dec, q[2], dec, q[1], dec, q[3])
+}
+
+# "estimador [bajo, alto]" para columnas con OR, β, ρ, δ acompañados de IC.
+# `signed = TRUE` añade el signo al estimador (útil para coeficientes con
+# signo informativo como ρ o δ); por defecto omite el signo (apto para OR,
+# cuyo valor neutro es 1 y la convención biomédica no le antepone signo).
+fmt_ci <- function(est, lo, hi, dec = 3, signed = FALSE) {
+  fmt <- if (signed) "%+.*f [%+.*f, %+.*f]" else "%.*f [%.*f, %.*f]"
+  sprintf(fmt, dec, est, dec, lo, dec, hi)
+}
+
+fmt_mean_sd <- function(x, dec = 2) {
+  sprintf("%.*f ± %.*f", dec, mean(x), dec, sd(x))
+}
+
+fmt_count_pct <- function(n, total) {
+  sprintf("%d (%.2f%%)", n, 100 * n / total)
+}
+
+# Asimetría y exceso de curtosis poblacionales (g1, g2)
+skew <- function(x) {
+  n <- length(x); m <- mean(x); s <- sd(x)
+  (sum((x - m)^3) / n) / s^3
+}
+kurt_exc <- function(x) {
+  n <- length(x); m <- mean(x); s <- sd(x)
+  (sum((x - m)^4) / n) / s^4 - 3
+}
+
+# Normaliza etiquetas de niveles para tablas con datos crudos.
+# Acepta un valor escalar `lv` y el nombre de la variable `var`:
+#   sexo → "F/female/mujer" → "Mujer"; "M/male/hombre" → "Hombre"
+#   crono_tipo_etiqueta_cronotipo_label → quita el prefijo "Cronotipo "
+# Para cualquier otra variable devuelve el nivel sin cambios.
+relabel_nivel <- function(lv, var) {
+  lv <- as.character(lv)
+  if (var == "sexo") {
+    sx <- tolower(lv)
+    out <- lv
+    out[sx %in% c("f", "female", "mujer")] <- "Mujer"
+    out[sx %in% c("m", "male", "hombre")] <- "Hombre"
+    return(out)
+  }
+  if (var == "crono_tipo_etiqueta_cronotipo_label") {
+    return(sub("^Cronotipo\\s+", "", lv))
+  }
+  lv
+}
+
+# Tabla de variables continuas (media ± DE) con los estratos del grupo en filas
+# y las variables en columnas.
+tabla_estratos_filas <- function(d, vars_cont, grupo_col,
+                                 relabel_nivel_fn = as.character,
+                                 label_vars = NULL) {
+  niveles <- if (is.factor(d[[grupo_col]])) levels(droplevels(d[[grupo_col]]))
+             else sort(unique(d[[grupo_col]]))
+
+  purrr::map_dfr(niveles, function(lv) {
+    sub <- d[d[[grupo_col]] == lv, ]
+    fila <- list(
+      Estrato = relabel_nivel_fn(lv),
+      n = as.character(nrow(sub))
+    )
+    for (v in vars_cont) {
+      var_label <- if (!is.null(label_vars) && !is.null(label_vars[[v]])) {
+        label_vars[[v]]
+      } else v
+      fila[[var_label]] <- fmt_mean_sd(sub[[v]])
+    }
+    as_tibble(fila)
+  })
+}
+
+# p-valores
+
+# Valor exacto del p-valor, con notación científica 
+fmt_p <- function(p, dec = 3) {
+  dplyr::case_when(
+    is.na(p) ~ "–",
+    p < 2.2e-16 ~ "< 2.2e-16",
+    p < 0.5 * 10^(-dec) ~ formatC(p, format = "e", digits = 1),
+    TRUE ~ formatC(p, format = "f", digits = dec)
+  )
+}
+
+# Etiquetas legibles de las variables circadianas/actigráficas (canal + marcador),
+# con la misma lógica que el capítulo de ML. Añade SD (desviación típica de la
+# señal del canal) y la robustez del ritmo, que el diccionario base no cubría.
+acortar_var <- function(x) {
+  glosa_especial <- c(robustez_circadiana_g44 = "Robustez circadiana")
+  canal <- c(sleep = "sueño", light = "luz", intensidad = "intensidad",
+             tiempomov = "tiempo movimiento", temperatura = "temperatura", tap = "TAP")
+  marc_hora <- c(horal5decimal = "hora L5", horal10decimal = "hora L10",
+                 horam5decimal = "hora M5", horam10decimal = "hora M10")
+  marc_valor <- c(valorl5 = "L5", valorl10 = "L10", valorm5 = "M5", valorm10 = "M10")
+  marc_idx <- c(is = "IS", iv = "IV", ra = "RA", ran = "NRA", cfi = "CFI",
+                chs = "CHS", p1p12 = "CI", sa = "ES", rf = "RF",
+                sd = "SD", media = "media")
+  cap1 <- function(s) sub("^(.)", "\\U\\1", s, perl = TRUE)
+  traducir1 <- function(v) {
+    v0 <- sub("TRUE$", "", v)
+    if (v0 %in% names(glosa_especial)) return(unname(glosa_especial[v0]))
+    pieza <- regmatches(v0, regexec("^([a-z]+)_(.+)$", v0))[[1]]
+    if (length(pieza) == 3 && pieza[2] %in% names(canal)) {
+      ch <- unname(canal[pieza[2]]); suf <- pieza[3]
+      if (suf %in% names(marc_hora))  return(sprintf("%s %s", cap1(ch), unname(marc_hora[suf])))
+      if (suf %in% names(marc_valor)) return(sprintf("%s %s", cap1(ch), unname(marc_valor[suf])))
+      if (suf %in% names(marc_idx))   return(sprintf("%s %s", cap1(ch), unname(marc_idx[suf])))
+    }
+    v0
+  }
+  vapply(x, traducir1, character(1), USE.NAMES = FALSE)
+}
+
+# Categorización del p-valor en umbrales convencionales
+fmt_sig <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "—",
+    p < 0.0001 ~ "< 0.0001",
+    p < 0.001 ~ "< 0.001",
+    p < 0.01 ~ "< 0.01",
+    p < 0.05 ~ "< 0.05",
+    TRUE ~ "ns"
+  )
+}
+
+# Asteriscos de significancia para corchetes en figuras (geom_text).
+sig_stars <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "—",
+    p < 0.0001 ~ "****",
+    p < 0.001 ~ "***",
+    p < 0.01 ~ "**",
+    p < 0.05 ~ "*",
+    TRUE ~ "ns"
+  )
+}
+
+# Tamaños de efecto · Cliff's δ
+
+# Extrae el valor de Cliff's δ del objeto devuelto por effectsize::cliffs_delta.
+# Wrapper de un cambio de API: effectsize >= 1.0 expone el estadístico como
+# `r_rank_biserial` (matemáticamente equivalente a Cliff's δ)
+pluck_cliff <- function(res) {
+  col <- if ("Cliffs_Delta" %in% names(res)) "Cliffs_Delta" else "r_rank_biserial"
+  as.numeric(res[[col]])
+}
+
+interpreta_cliff <- function(d) {
+  d <- as.numeric(d)
+  ad <- abs(d)
+  case_when(
+    is.na(d) ~ "—",
+    ad < 0.147 ~ "negligible",
+    ad < 0.33 ~ "pequeño",
+    ad < 0.474 ~ "mediano",
+    TRUE ~ "grande"
+  )
+}
+
+# Añade columna `cliff_d` a la salida de `rstatix::dunn_test` calculando
+# Cliff's δ para cada par (group1 vs group2). Útil para tener post-hoc Dunn
+# y tamaños de efecto pareados en una sola tabla.
+add_cliff_to_dunn <- function(dunn_df, data, value_col, group_col) {
+  # Convención: cliffs_delta(x, y) devuelve δ > 0 si x domina estocásticamente
+  # a y. Aquí x corresponde a group1 e y a group2 según el orden de cada par
+  # de rstatix::dunn_test (orden del factor). Por tanto, en cada par del Dunn
+  # δ > 0 ⇔ el grupo de la izquierda (group1) tiene mayor valor que el de la
+  # derecha (group2). La nota direccional bajo cada tabla post-hoc traduce
+  # esta convención al contexto de la sección correspondiente.
+  cliffs <- purrr::map2_dfr(dunn_df$group1, dunn_df$group2, function(g1, g2) {
+    x <- data[[value_col]][data[[group_col]] == g1]
+    y <- data[[value_col]][data[[group_col]] == g2]
+    tibble(group1 = g1, group2 = g2,
+           cliff_d = pluck_cliff(effectsize::cliffs_delta(x, y)))
+  })
+  dunn_df |> left_join(cliffs, by = c("group1", "group2"))
+}
+
+# Renderiza una tabla post-hoc estandarizada a partir de un dunn enriquecido
+# con Cliff δ (vía `add_cliff_to_dunn`).
+render_dunn_table <- function(dunn_df, caption, label_fn = identity) {
+  dunn_df |>
+    mutate(
+      Comparación = sprintf("%s vs %s", label_fn(group1), label_fn(group2)),
+      `p (Holm)` = fmt_p(p.adj),
+      Significancia = fmt_sig(p.adj),
+      `Cliff δ` = sprintf("%+.3f", cliff_d),
+      Magnitud = interpreta_cliff(cliff_d)
+    ) |>
+    dplyr::select(Comparación, `p (Holm)`, Significancia, `Cliff δ`, Magnitud) |>
+    estilo_kable(caption = caption)
+}
+
+# Devuelve p ajustado y Cliff δ del par (g1, g2) en una tabla Dunn enriquecida.
+# Insensible al orden interno de los grupos.
+dunn_pair <- function(dunn_df, g1, g2) {
+  d <- dunn_df |>
+    filter((group1 == g1 & group2 == g2) | (group1 == g2 & group2 == g1))
+  list(p = d$p.adj[1], cliff = d$cliff_d[1])
+}
+
+# Devuelve la mediana del grupo `g` extraída del dataframe `med_df` (creado
+# en cada chunk con summarise(med = median(...))). `col_grupo` es el nombre
+# de la columna que contiene los niveles del grupo.
+dunn_group_median <- function(med_df, col_grupo, g) {
+  med_df$med[as.character(med_df[[col_grupo]]) == g]
+}
+
+# Corchetes de significancia en figuras
+
+# Construye la tabla de pares adyacentes para los corchetes,
+# extrayendo el p ajustado del post-hoc Dunn y la posición horizontal de cada
+# corchete. `levels` debe estar en el mismo orden que el eje X del boxplot.
+build_adj_pairs <- function(levels, dunn_df, x_inset = 0.12) {
+  tibble(
+    i = 1:(length(levels) - 1),
+    group1 = levels[-length(levels)],
+    group2 = levels[-1]
+  ) |>
+    left_join(dunn_df |> dplyr::select(group1, group2, p.adj),
+              by = c("group1", "group2")) |>
+    mutate(stars = sig_stars(p.adj),
+           x_lo = i + x_inset,
+           x_hi = i + 1 - x_inset,
+           x_mid = i + 0.5)
+}
+
+# Devuelve una lista de capas ggplot que dibujan los corchetes de
+# significancia (línea horizontal con dos topes verticales + asteriscos
+# centrados encima) a la altura `y` del eje y. `pairs` debe tener columnas
+# x_lo, x_hi, x_mid y stars. `y_max` se usa para calibrar los offsets
+# verticales relativos.
+add_corchetes_signif <- function(pairs, y, y_max, color = HEADER,
+                                 star_size = 4.5, linewidth = 0.4) {
+  cap <- y_max * 0.022
+  star_y <- y + y_max * 0.045
+  list(
+    geom_segment(data = pairs, aes(x = x_lo, xend = x_hi),
+                 y = y, yend = y,
+                 color = color, linewidth = linewidth, inherit.aes = FALSE),
+    geom_segment(data = pairs, aes(x = x_lo, xend = x_lo),
+                 y = y, yend = y - cap,
+                 color = color, linewidth = linewidth, inherit.aes = FALSE),
+    geom_segment(data = pairs, aes(x = x_hi, xend = x_hi),
+                 y = y, yend = y - cap,
+                 color = color, linewidth = linewidth, inherit.aes = FALSE),
+    geom_text(data = pairs, aes(x = x_mid, label = stars),
+              y = star_y, color = color, size = star_size, fontface = "bold",
+              inherit.aes = FALSE)
+  )
+}
+
+# Correlación parcial de Spearman
+
+partial_spearman <- function(data, x, y, controls) {
+  # Seleccionar solo las columnas necesarias y eliminar filas con NAs en
+  # cualquiera de ellas; ppcor no gestiona NAs internamente.
+  d <- data |>
+    select(all_of(c(x, y, controls))) |>
+    drop_na() |>
+    mutate(across(where(is.character), as.factor))
+  # Guardia mínima: si quedan menos observaciones que covariables + 5,
+  # la matriz de covarianza es singular y pcor.test fallaría.
+  if (nrow(d) < length(controls) + 5) {
+    return(tibble(rho_partial = NA_real_, p = NA_real_, n = nrow(d)))
+  }
+  # Expansión de factores a K-1 variables indicadoras vía model.matrix
+  # (omite la categoría de referencia). Las covariables continuas pasan tal
+  # cual. Necesario porque ppcor::pcor.test exige todo numérico y, sin esta
+  # expansión, un factor de K niveles se codificaría como ordinal 0..K-1
+  # imponiendo una relación lineal espuria entre las categorías.
+  rhs <- paste(sprintf("`%s`", controls), collapse = " + ")
+  Z <- model.matrix(as.formula(paste("~", rhs)), data = d)[, -1, drop = FALSE]
+  ct <- ppcor::pcor.test(d[[x]], d[[y]],
+                          as.data.frame(Z), method = "spearman")
+  tibble(rho_partial = ct$estimate, p = ct$p.value, n = ct$n)
+}
+```
+
+## 0.4 Carga y muestras analíticas
+
+```{r load_data}
+PROCESSED <- "data/processed"
+
+to_bool <- function(x) {
+  if (is.logical(x)) return(replace_na(x, FALSE))
+  tolower(as.character(x)) %in% c("true", "1", "yes", "verdadero")
+}
+
+val <- read_csv(file.path(PROCESSED, "df_cohorte_con_sjl.csv"),
+                show_col_types = FALSE) |>
+  mutate(es_sano = to_bool(es_sano))
+
+val_sanos <- val |> filter(es_sano)
+
+cat(sprintf("Cohorte analítica (val): %d\n", nrow(val)))
+cat(sprintf("  · sanos (val_sanos): %d (%.1f%% de val)\n",
+            nrow(val_sanos), 100 * nrow(val_sanos) / nrow(val)))
+cat(sprintf("  · pacientes: %d (%.1f%% de val)\n",
+            nrow(val) - nrow(val_sanos),
+            100 * (nrow(val) - nrow(val_sanos)) / nrow(val)))
+```
+
+## 0.5 Configuración común
+
+```{r config}
+# Variantes del SJL
+VAR_ABS <- c("SJL", "SJL_sc", "SJL_J")
+VAR_SIG <- c("SJL_signed", "SJL_sc_signed", "SJL_J_signed")
+PRIMARY <- "SJL"
+PRIMARY_LBL <- VAR_LABEL[PRIMARY]
+
+# Franjas de edad
+EDAD_BINS <- c(13, 18, 25, 41, 51, 65, 200)
+EDAD_LABELS <- c("13-17", "18-24", "25-40", "41-50", "51-64", "≥65")
+EDAD_COL <- "edad_estudio_int"  # edad entera: franjas, tabla descriptiva y cortes de edad
+EDAD_NUM <- "edad_estudio"  # edad continua: covariable en regresiones, ANCOVA, parciales y logística
+CRONO_COL <- "crono_tipo_etiqueta_cronotipo_label"
+
+# Orden canónico de cronotipo
+CRONO_ORDER <- c(
+  "Cronotipo vespertino extremo",
+  "Cronotipo vespertino",
+  "Cronotipo indefinido",
+  "Cronotipo matutino",
+  "Cronotipo matutino extremo"
+)
+
+# Puntos de corte clínicamente relevantes para el SJL (h)
+SJL_CUTOFFS <- c(1, 2)
+
+add_grupo_edad <- function(d, col = EDAD_COL) {
+  d |> mutate(grupo_edad = cut(.data[[col]], breaks = EDAD_BINS,
+                                labels = EDAD_LABELS, right = FALSE))
+}
+
+# Cronotipo colapsado a 3 niveles (M/N/V) para los modelos jerárquicos,
+# dado el n bajo en los extremos.
+colapsar_cronotipo <- function(x) {
+  mapa <- c("Cronotipo matutino extremo" = "M",
+            "Cronotipo matutino" = "M",
+            "Cronotipo indefinido" = "N",
+            "Cronotipo vespertino" = "V",
+            "Cronotipo vespertino extremo" = "V")
+  unname(replace(mapa[as.character(x)], is.na(mapa[as.character(x)]), "N"))
+}
+
+# Categorías OMS de IMC para adultos (≥18)
+IMC_LABS <- c("Bajo peso", "Normopeso", "Sobrepeso", "Obesidad")
+IMC_BINS <- c(0, 18.5, 25.0, 30.0, 100.0)
+
+# Mediana global del SJL sobre sanos (línea de referencia en los boxplots de
+# §4-§6). Se calcula una vez aquí porque se reutiliza en varias secciones.
+MED_SJL_SANOS <- median(val_sanos[[PRIMARY]])
+```
+
+---
+
+# 1 · Caracterización de la cohorte
+
+## 1.1 Cohorte por estado de salud
+
+```{r tabla1_setup, include = FALSE}
+val_t1 <- val |> add_grupo_edad()
+
+vars_t1 <- c(EDAD_COL, "imc", "peso_kg", "altura_cm",
+             "sexo", "grupo_edad", CRONO_COL)
+vars_t1 <- intersect(vars_t1, names(val_t1))
+vars_factor <- intersect(c("sexo", "grupo_edad", CRONO_COL), vars_t1)
+vars_continuas <- setdiff(vars_t1, vars_factor)
+
+# Etiquetas legibles
+LABEL_T1 <- c(
+  edad_estudio_int = "Edad (años)",
+  imc = "IMC (kg/m²)",
+  peso_kg = "Peso (kg)",
+  altura_cm = "Altura (cm)",
+  sexo = "Sexo",
+  grupo_edad = "Grupo etario"
+)
+LABEL_T1[[CRONO_COL]] <- "Cronotipo"
+
+get_label <- function(v) if (!is.null(LABEL_T1[[v]])) LABEL_T1[[v]] else v
+```
+
+```{r tabla1}
+# Fila para variable continua: media ± DE
+fila_continua <- function(d, var) {
+  tibble(
+    Variable = get_label(var),
+    Sanos = fmt_mean_sd(d[[var]][d$es_sano]),
+    Pacientes = fmt_mean_sd(d[[var]][!d$es_sano]),
+    Global = fmt_mean_sd(d[[var]]),
+    es_header = FALSE,
+    es_nivel = FALSE
+  )
+}
+
+# Filas para variable categórica: cabecera + niveles indentados
+filas_categorica <- function(d, var) {
+  x <- factor(d[[var]]) |> droplevels()
+  lvls <- levels(x)
+  # Factor con etiquetas legibles solo aquí: hace que las columnas de
+  # tab_strata se llamen "Sanos"/"Pacientes" en lugar de "TRUE"/"FALSE".
+  estrato <- factor(d$es_sano, levels = c(TRUE, FALSE),
+                    labels = c("Sanos", "Pacientes"))
+  tab_strata <- table(x, estrato)
+  tab_total <- table(x)
+  n_san <- sum(d$es_sano)
+  n_pat <- sum(!d$es_sano)
+  n_all <- nrow(d)
+
+  header <- tibble(
+    Variable = sprintf("%s, n (%%)", get_label(var)),
+    Sanos = "", Pacientes = "", Global = "",
+    es_header = TRUE, es_nivel = FALSE
+  )
+  niveles <- purrr::map_dfr(lvls, function(lv) {
+    c_san <- as.integer(tab_strata[lv, "Sanos"])
+    c_pat <- as.integer(tab_strata[lv, "Pacientes"])
+    c_all <- as.integer(tab_total[lv])
+    tibble(
+      Variable = relabel_nivel(lv, var),
+      Sanos = fmt_count_pct(c_san, n_san),
+      Pacientes = fmt_count_pct(c_pat, n_pat),
+      Global = fmt_count_pct(c_all, n_all),
+      es_header = FALSE,
+      es_nivel = TRUE
+    )
+  })
+  bind_rows(header, niveles)
+}
+
+# Fila inicial con los tamaños de muestra
+n_san <- sum(val_t1$es_sano)
+n_pat <- sum(!val_t1$es_sano)
+n_tot <- nrow(val_t1)
+
+fila_n <- tibble(
+  Variable = "n (%)",
+  Sanos = fmt_count_pct(n_san, n_tot),
+  Pacientes = fmt_count_pct(n_pat, n_tot),
+  Global = as.character(n_tot),
+  es_header = TRUE, es_nivel = FALSE
+)
+
+filas <- purrr::map(vars_t1, function(v) {
+  if (v %in% vars_factor) filas_categorica(val_t1, v)
+  else fila_continua(val_t1, v)
+})
+
+tab1_clean <- bind_rows(fila_n, !!!filas)
+
+# Render con `kable_jerarquica` (sección 0.2): aplica clases HTML de
+# indentación/negrita a la columna jerárquica y resalta las cabeceras
+# intermedias con fondo gris claro.
+tab1_clean |>
+  kable_jerarquica(
+    col_jerarquica = "Variable",
+    caption = "Tabla 1 · Características de la cohorte estratificada por estado de salud.",
+    col_names = c("Variable", "Sanos", "Pacientes", "Global"),
+    align = c("l", "r", "r", "r")
+  ) |>
+  column_spec(1, width = "22em") |>
+  column_spec(2:4, width = "10em")
+```
+
+```{r tabla1_resumen, include = FALSE}
+edad <- val_t1[[EDAD_COL]]
+crono_san <- val_t1[[CRONO_COL]][val_t1$es_sano]
+
+pct_san <- 100 * n_san / n_tot
+pct_pat <- 100 * n_pat / n_tot
+pct_muj_san <- 100 * mean(val_t1$sexo[val_t1$es_sano] == "F")
+pct_muj_pat <- 100 * mean(val_t1$sexo[!val_t1$es_sano] == "F")
+pct_vesp_ext <- 100 * mean(crono_san == "Cronotipo vespertino extremo")
+pct_mat_ext <- 100 * mean(crono_san == "Cronotipo matutino extremo")
+```
+
+La muestra analítica reúne `r n_tot` sujetos, de los cuales el `r sprintf("%.1f", pct_san)` % son sanos (n = `r n_san`) y forman la base de los análisis poblacionales posteriores; el resto (`r sprintf("%.1f", pct_pat)` %, n = `r n_pat`) presenta alguna patología recogida en el CRD. La distribución por sexo está aceptablemente equilibrada en ambas muestras (`r sprintf("%.1f", pct_muj_san)` % mujeres entre los sanos; `r sprintf("%.1f", pct_muj_pat)` % entre los pacientes) y la edad media global es de `r sprintf("%.2f", mean(edad))` ± `r sprintf("%.2f", sd(edad))` años (rango `r min(edad)`-`r max(edad)`). En cuanto al cronotipo, la categoría "indefinido" es la mayoritaria (resultado esperable, ya que es la más frecuente en la población general); los cronotipos matutino y vespertino aparecen razonablemente equilibrados entre sí, mientras que los extremos son minoritarios y asimétricos: el vespertino extremo concentra el `r sprintf("%.1f", pct_vesp_ext)` % de la muestra sana y el matutino extremo apenas el `r sprintf("%.1f", pct_mat_ext)` %.
+
+## 1.2 Variables continuas por sexo y grupo etario (sujetos sanos)
+
+Edad, IMC, peso y altura desglosados por dos estratificaciones complementarias en una única tabla, **restringida a sujetos sanos** porque las secciones poblacionales posteriores trabajan sobre `val_sanos`.
+
+```{r tabla1_estratificada}
+# Restricción a sanos: las secciones poblacionales (2-5) usan esta vista.
+val_t1_sanos <- val_t1 |> filter(es_sano)
+
+# Filas por estratos: primero los dos sexos, luego los siete grupos etarios
+sx_rows <- tabla_estratos_filas(
+  val_t1_sanos, vars_continuas, "sexo",
+  relabel_nivel_fn = function(x) relabel_nivel(x, "sexo"),
+  label_vars = LABEL_T1
+) |> mutate(es_header = FALSE, es_nivel = TRUE)
+
+ed_rows <- tabla_estratos_filas(
+  val_t1_sanos, vars_continuas, "grupo_edad",
+  relabel_nivel_fn = as.character,
+  label_vars = LABEL_T1
+) |> mutate(es_header = FALSE, es_nivel = TRUE)
+
+make_seccion_header <- function(label, plantilla) {
+  fila <- plantilla[1, ] |> mutate(across(everything(), ~ ""))
+  fila$Estrato <- label
+  fila$es_header <- TRUE
+  fila$es_nivel <- FALSE
+  fila
+}
+
+tab_estr <- bind_rows(
+  make_seccion_header("Sexo", sx_rows),
+  sx_rows,
+  make_seccion_header("Grupo etario", ed_rows),
+  ed_rows
+)
+
+# Render con `kable_jerarquica` (sección 0.2). Los anchos de columna se
+# calculan sobre el número de columnas de datos (descontando las dos
+# columnas de control es_header/es_nivel que el helper quita).
+n_cols_datos <- ncol(tab_estr) - 2  # ncol final tras descartar es_header, es_nivel
+
+tab_estr |>
+  kable_jerarquica(
+    col_jerarquica = "Estrato",
+    caption = "Tabla 2 · Variables antropométricas en sanos, estratificadas por sexo y grupo etario.",
+    align = c("l", rep("r", n_cols_datos - 1))
+  ) |>
+  column_spec(1, width = "11em") |>
+  column_spec(2, width = "6em") |>
+  column_spec(3:n_cols_datos, width = "10em")
+```
+
+```{r tabla1_estratificada_resumen, include = FALSE}
+peso_h <- val_t1_sanos$peso_kg[val_t1_sanos$sexo == "M"]
+peso_m <- val_t1_sanos$peso_kg[val_t1_sanos$sexo == "F"]
+alt_h <- val_t1_sanos$altura_cm[val_t1_sanos$sexo == "M"]
+alt_m <- val_t1_sanos$altura_cm[val_t1_sanos$sexo == "F"]
+imc_h <- val_t1_sanos$imc[val_t1_sanos$sexo == "M"]
+imc_m <- val_t1_sanos$imc[val_t1_sanos$sexo == "F"]
+
+imc_joven <- val_t1_sanos$imc[val_t1_sanos$grupo_edad == "13-17"]
+imc_mayor <- val_t1_sanos$imc[val_t1_sanos$grupo_edad == "≥65"]
+
+dif_peso <- round(mean(peso_h) - mean(peso_m))
+dif_alt <- round(mean(alt_h) - mean(alt_m))
+```
+
+Las diferencias antropométricas entre sexos en la muestra sana son las clásicas: los hombres pesan de media unos `r dif_peso` kg más que las mujeres (`r fmt_mean_sd(peso_h)` vs `r fmt_mean_sd(peso_m)` kg) y miden ~`r dif_alt` cm más (`r fmt_mean_sd(alt_h)` vs `r fmt_mean_sd(alt_m)` cm); el IMC también es algo más alto en hombres (`r fmt_mean_sd(imc_h)` vs `r fmt_mean_sd(imc_m)` kg/m²). Por edad, el IMC sube progresivamente, de `r fmt_mean_sd(imc_joven)` en adolescentes (13-17) a `r fmt_mean_sd(imc_mayor)` en la franja ≥ 65, de modo que solo esta última franja supera de media el umbral clínico de sobrepeso (25 kg/m²).
+
+## 1.3 Visualización gráfica de la cohorte
+
+```{r tabla1_graficos, fig.width = 13, fig.height = 5.4, fig.cap = "Figura 1 · Estructura de la cohorte. (a) Sanos vs pacientes por grupo etario sobre la cohorte completa, con n y porcentaje por franja. (b) Pirámide poblacional por sexo y grupo etario en sanos: mujeres a la izquierda, hombres a la derecha."}
+val_g <- val_t1 |>
+  mutate(
+    sexo_lab = factor(sexo, levels = c("F", "M"), labels = c("Mujer", "Hombre")),
+    grupo_edad = factor(grupo_edad, levels = EDAD_LABELS)
+  )
+
+# (a) Sanos vs Pacientes por grupo etario (cohorte completa)
+salud_df <- val_g |>
+  count(grupo_edad, es_sano) |>
+  group_by(grupo_edad) |>
+  mutate(
+    estado = factor(es_sano, levels = c(TRUE, FALSE),
+                    labels = c("Sanos", "Pacientes")),
+    prop = n / sum(n),
+    # Etiquetas: si el bloque tiene < 7 % se saca fuera de la barra apilada
+    # (encima del segmento delgado) para evitar que el texto se corte.
+    label = sprintf("%d (%.0f%%)", n, 100 * prop),
+    label_y = ifelse(prop < 0.07,
+                     # Para bloques finos: sitúa la etiqueta inmediatamente por
+                     # encima del propio segmento, ya sobre el segmento contiguo.
+                     ifelse(!es_sano, prop + 0.04, 1 - prop - 0.04),
+                     # Para bloques con espacio: en el centro del segmento.
+                     ifelse(!es_sano, prop / 2, 1 - (1 - prop) / 2))
+  ) |>
+  ungroup()
+
+p_salud <- ggplot(salud_df,
+                  aes(x = grupo_edad, y = prop, fill = estado)) +
+  geom_col(width = 0.75, color = "white", linewidth = 0.4) +
+  geom_text(aes(y = label_y, label = label),
+            color = "white", size = 3.2, fontface = "bold", show.legend = FALSE) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     expand = expansion(mult = c(0, 0.02))) +
+  scale_fill_manual(values = PAL_SALUD) +
+  labs(x = "Grupo etario", y = "Proporción", fill = NULL) +
+  theme(legend.position = "top")
+
+# (b) Pirámide poblacional sobre sanos
+piramide_df <- val_g |>
+  filter(es_sano) |>
+  count(grupo_edad, sexo_lab) |>
+  mutate(n_signed = ifelse(sexo_lab == "Mujer", -n, n))
+
+p_piramide <- ggplot(piramide_df,
+                     aes(x = grupo_edad, y = n_signed, fill = sexo_lab)) +
+  geom_col(width = 0.75, alpha = 0.9, color = "white", linewidth = 0.4) +
+  geom_text(aes(label = n, y = n_signed),
+            hjust = ifelse(piramide_df$sexo_lab == "Mujer", 1.18, -0.18),
+            size = 3.2, color = HEADER, fontface = "bold") +
+  geom_hline(yintercept = 0, color = "white", linewidth = 0.6) +
+  coord_flip() +
+  scale_y_continuous(
+    labels = abs,
+    expand = expansion(mult = c(0.22, 0.22))
+  ) +
+  scale_fill_manual(values = PAL_SEXO) +
+  labs(x = "Grupo etario", y = "n", fill = NULL) +
+  theme(legend.position = "top")
+
+p_salud + p_piramide +
+  plot_layout(widths = c(1, 1)) +
+  plot_annotation(
+    tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
+    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 14))
+  )
+```
+
+```{r tabla1_graficos_resumen, include = FALSE}
+# Patología por franja etaria (cohorte completa)
+prev_pat <- val_g |>
+  group_by(grupo_edad) |>
+  summarise(n_pat = sum(!es_sano), n_tot = n(), pct = 100 * n_pat / n_tot,
+            .groups = "drop") |>
+  arrange(pct)
+franja_min <- prev_pat[1, ]
+franja_top2 <- prev_pat |> arrange(desc(pct)) |> slice(1:2)
+
+# Franja más numerosa en sanos
+top_sanos <- val_g |> filter(es_sano) |>
+  count(grupo_edad) |> arrange(desc(n)) |> slice(1)
+
+# Dominancia por sexo en cada franja (sanos)
+dom_sexo <- val_g |> filter(es_sano) |>
+  count(grupo_edad, sexo_lab) |>
+  tidyr::pivot_wider(names_from = sexo_lab, values_from = n, values_fill = 0L) |>
+  mutate(dom = ifelse(Mujer > Hombre, "M", "H"))
+franjas_muj <- paste(dom_sexo$grupo_edad[dom_sexo$dom == "M"], collapse = ", ")
+franjas_hom <- paste(dom_sexo$grupo_edad[dom_sexo$dom == "H"], collapse = ", ")
+```
+
+La prevalencia de patología por grupo etario (Figura 1a) no es uniforme: la franja `r franja_min$grupo_edad` es la más limpia (`r sprintf("%.1f", franja_min$pct)` % de pacientes, `r franja_min$n_pat`/`r franja_min$n_tot`) y las franjas `r franja_top2$grupo_edad[1]` y `r franja_top2$grupo_edad[2]` acumulan las tasas más altas (`r sprintf("%.1f", franja_top2$pct[1])` % y `r sprintf("%.1f", franja_top2$pct[2])` %, respectivamente). La pirámide de sanos (Figura 1b) muestra que la franja más numerosa es `r top_sanos$grupo_edad` años (n = `r top_sanos$n`); la proporción mujer/hombre oscila por franja (mujeres dominan las franjas `r franjas_muj`; hombres son mayoría en `r franjas_hom`) aunque el total global queda equilibrado.
+
+---
+
+# 2 · Análisis descriptivo
+
+A partir de aquí el documento utiliza tres variantes del SJL, identificadas con la siguiente notación:
+
+| Símbolo | Definición | Fuente |
+|---|---|---|
+| SJL | Formulación clásica: $\|MSF - MSW\|$ | Wittmann 2006, Roenneberg 2012 [1, 2] |
+| SJL<sub>sc</sub> | Variante corregida por deuda de sueño: el MSF se ajusta restando la deuda acumulada en días laborables antes de calcular el desfase, basada en el concepto MSF<sub>sc</sub> | Roenneberg 2012 [2] |
+| SJL<sub>J</sub> | Variante de Jankowski: estimador basado en el extremo del episodio (onset u offset) menos perturbado por la deuda de sueño | Jankowski 2017 [6] |
+
+A cada variante le acompaña su versión **con signo** (sin valor absoluto), notada con "(signo)", que conserva la dirección del desfase: positivo = retraso vespertino en días libres (MSF posterior a MSW), negativo = adelanto matutino.
+
+## 2.1 Resumen y coherencia entre las tres variantes
+
+### Descriptivos por variante
+
+Resumen de las tres variantes del SJL, en magnitud absoluta (Tabla 3) y con signo (Tabla 4). Las columnas `% > 1 h`, `% > 2 h` y `% > 3 h` son proporciones acumulativas que recogen los umbrales habituales: 1 h, descriptor poblacional del fenómeno asociado a peor calidad subjetiva del sueño [1, 2, 4]; 2 h, vinculado a mayor riesgo metabólico y cardiovascular [8, 9, 5]; 3 h, jet lag social severo (~P90 esperado). `% tardío` en la tabla con signo recoge la fracción con MSF posterior a MSW (retraso vespertino los días libres), dirección habitual del fenómeno [1, 4].
+
+```{r desc_sjl_table}
+resumen_abs <- function(s) {
+  tibble(
+    `Mediana [Q1, Q3]` = fmt_iqr(s),
+    `Media ± DE` = fmt_mean_sd(s),
+    `% > 1 h` = sprintf("%.2f", 100 * mean(abs(s) > 1)),
+    `% > 2 h` = sprintf("%.2f", 100 * mean(abs(s) > 2)),
+    `% > 3 h` = sprintf("%.2f", 100 * mean(abs(s) > 3))
+  )
+}
+
+resumen_sig <- function(s) {
+  tibble(
+    `Mediana [Q1, Q3]` = fmt_iqr(s),
+    `Media ± DE` = fmt_mean_sd(s),
+    `% tardío` = sprintf("%.2f", 100 * mean(s > 0))
+  )
+}
+
+tab_abs <- map_dfr(VAR_ABS,
+                   ~ resumen_abs(val_sanos[[.x]]) |>
+                     mutate(Variante = VAR_LABEL[.x], .before = 1))
+tab_sig <- map_dfr(VAR_SIG,
+                   ~ resumen_sig(val_sanos[[.x]]) |>
+                     mutate(Variante = VAR_LABEL[.x], .before = 1))
+
+tab_abs |>
+  estilo_kable(caption = "Tabla 3 · Descriptivos de las tres variantes del SJL en valor absoluto.")
+
+tab_sig |>
+  estilo_kable(caption = "Tabla 4 · Descriptivos de las tres variantes del SJL con signo.")
+```
+
+```{r desc_sjl_resumen, include = FALSE}
+sjl <- val_sanos$SJL
+sjl_sc <- val_sanos$SJL_sc
+sjl_j <- val_sanos$SJL_J
+
+med_sjl <- median(sjl); q1_sjl <- quantile(sjl, 0.25); q3_sjl <- quantile(sjl, 0.75)
+mean_sjl <- mean(sjl)
+pct_1h <- 100 * mean(sjl > 1)
+pct_2h <- 100 * mean(sjl > 2)
+pct_3h <- 100 * mean(sjl > 3)
+
+med_sc <- median(sjl_sc)
+med_j <- median(sjl_j)
+pct_2h_sc <- 100 * mean(sjl_sc > 2)
+pct_2h_j <- 100 * mean(sjl_j > 2)
+
+# Bloque con signo
+sjl_s <- val_sanos$SJL_signed
+sjl_sc_s <- val_sanos$SJL_sc_signed
+sjl_j_s <- val_sanos$SJL_J_signed
+
+pct_tardio_sjl <- 100 * mean(sjl_s > 0)
+pct_tardio_sc <- 100 * mean(sjl_sc_s > 0)
+pct_tardio_j <- 100 * mean(sjl_j_s > 0)
+med_sig_sjl <- median(sjl_s)
+med_sig_j <- median(sjl_j_s)
+pct_temprano_min <- round(min(100 - c(pct_tardio_sjl, pct_tardio_sc, pct_tardio_j)))
+pct_temprano_max <- round(max(100 - c(pct_tardio_sjl, pct_tardio_sc, pct_tardio_j)))
+```
+
+Las tres variantes coinciden en describir el SJL como una variable de magnitud moderada en la población sana: la mediana del SJL es `r sprintf("%.2f", med_sjl)` h con IQR `r sprintf("%.2f", q1_sjl)`–`r sprintf("%.2f", q3_sjl)` h. Sobre los puntos de corte clínicos, un `r sprintf("%.2f", pct_1h)` % de los sanos supera la hora de SJL, un `r sprintf("%.2f", pct_2h)` % las 2 h y solo un `r sprintf("%.2f", pct_3h)` % las 3 h, es decir, el jet lag social severo es minoritario en esta cohorte. Las variantes corregidas producen valores sistemáticamente más bajos: la mediana baja a `r sprintf("%.2f", med_sc)` h en SJL<sub>sc</sub> y a `r sprintf("%.2f", med_j)` h en SJL<sub>J</sub>, y la fracción de sujetos por encima de las 2 h cae del `r sprintf("%.2f", pct_2h)` % al `r sprintf("%.2f", pct_2h_sc)` % y al `r sprintf("%.2f", pct_2h_j)` % respectivamente. Estas correcciones eliminan parte del componente atribuible a la deuda de sueño acumulada o al desplazamiento de un solo extremo del episodio. La media es en las tres variantes superior a la mediana (`r sprintf("%.2f", mean_sjl)` vs `r sprintf("%.2f", med_sjl)` h en SJL, por ejemplo), reflejando el sesgo a la derecha de la distribución que se examina con más detalle en la subsección 2.2.
+
+En el bloque con signo, las tres variantes confirman el patrón mayoritario de retraso vespertino en días libres: el `r sprintf("%.2f", pct_tardio_sjl)` % de los sanos presenta MSF posterior a MSW en el SJL clásico, el `r sprintf("%.2f", pct_tardio_j)` % en el SJL<sub>J</sub> y el `r sprintf("%.2f", pct_tardio_sc)` % en el SJL<sub>sc</sub>. La caída en SJL<sub>sc</sub> es esperable: al restar la deuda de sueño del MSF, la distribución se desplaza hacia la izquierda y una parte de los sujetos previamente clasificados como tardíos cruzan al lado negativo. Las medianas con signo (`r sprintf("%+.2f", med_sig_sjl)` h en SJL, `r sprintf("%+.2f", med_sig_j)` h en SJL<sub>J</sub>) son ligeramente inferiores a sus contrapartes en valor absoluto, porque la minoría con adelanto matutino (~`r pct_temprano_min`–`r pct_temprano_max` %) las arrastra hacia abajo cuando se permite el signo.
+
+### Coherencia entre variantes
+
+Las tres formulaciones del SJL miden el mismo constructo (el desfase circadiano entre días con y sin obligaciones) desde perspectivas ligeramente distintas. Antes de centrar el resto del documento en la variante clásica conviene comprobar hasta qué punto son **intercambiables** desde el punto de vista empírico mediante la **correlación de Spearman** entre las tres variantes, que cuantifica el grado de ordenamiento conjunto. Si las tres ordenan a los sujetos de forma muy parecida, las conclusiones obtenidas con la clásica deberían replicarse con SJL<sub>sc</sub> y SJL<sub>J</sub>; si difieren mucho, la elección de métrica podría ser determinante.
+
+```{r coherencia_variantes, fig.width = 6.5, fig.height = 5, fig.cap = "Figura 2 · Matriz de correlación de Spearman entre las tres variantes del SJL."}
+mat <- val_sanos |>
+  select(all_of(VAR_ABS)) |>
+  cor(method = "spearman")
+
+mat_long <- as.data.frame(mat) |>
+  rownames_to_column("var1") |>
+  pivot_longer(-var1, names_to = "var2", values_to = "rho")
+
+lab_math <- c(SJL = "SJL", SJL_sc = "SJL[sc]", SJL_J = "SJL[J]")
+
+ggplot(mat_long, aes(x = var1, y = var2, fill = rho)) +
+  geom_tile(color = "white", linewidth = 1.2) +
+  geom_text(aes(label = sprintf("%.3f", rho)),
+            color = HEADER, fontface = "bold", size = 4.2) +
+  scale_fill_gradientn(
+    colors = c("#fdf6ec", "#fbe2c4", "#f6c79e", "#eea585", "#d97757"),
+    limits = c(0.6, 1)
+  ) +
+  scale_x_discrete(labels = function(x) parse(text = lab_math[x])) +
+  scale_y_discrete(labels = function(x) parse(text = lab_math[x])) +
+  labs(x = NULL, y = NULL, fill = "ρ") +
+  coord_fixed() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(color = "grey20", size = 12),
+    axis.text.y = element_text(color = "grey20", size = 12)
+  )
+```
+
+```{r coherencia_resumen, include = FALSE}
+rho_min <- min(mat[upper.tri(mat)])
+```
+
+Las correlaciones de Spearman entre las tres variantes son muy altas (todas ρ ≥ `r sprintf("%.3f", rho_min)`), lo que confirma que ordenan a los sujetos de forma muy similar: una persona con mucho SJL clásico también tendrá un SJL<sub>sc</sub> y un SJL<sub>J</sub> elevados en relación al resto. 
+
+## 2.2 Distribución del SJL en sanos
+
+### Las tres variantes en valor absoluto y con signo
+
+```{r dist_sjl, fig.width = 14, fig.height = 8, fig.cap = "Figura 3 · Distribución de las tres variantes del SJL. Fila superior: valor absoluto, con líneas punteadas en los puntos de corte clínicos 1 h y 2 h. Fila inferior: con signo (positivo: retraso vespertino; negativo: adelanto matutino). Línea vertical roja: mediana."}
+# Histogramas absolutos
+make_hist_abs <- function(var) {
+  s <- val_sanos[[var]]
+  med <- median(s)
+  col <- COLOR_BY_VAR[[var]]
+  ggplot(tibble(x = s), aes(x = x)) +
+    geom_histogram(aes(y = after_stat(density)),
+                   bins = 40, fill = col, alpha = 0.55, color = "white") +
+    geom_density(color = col, linewidth = 0.8) +
+    geom_vline(xintercept = med, color = ACCENT, linewidth = 0.5) +
+    geom_vline(xintercept = SJL_CUTOFFS, color = REF,
+               linetype = "dotted", linewidth = 0.4) +
+    annotate("label", x = Inf, y = Inf,
+             label = sprintf("mediana = %.2f h", med),
+             hjust = 1.05, vjust = 1.2, size = 2.4, color = HEADER,
+             fill = "white", alpha = 0.9, label.size = 0.3) +
+    labs(x = sprintf("%s (h)", VAR_LABEL[var]), y = "Densidad") +
+    xlim(0, NA) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15)))
+}
+
+make_hist_sig <- function(var) {
+  s <- val_sanos[[var]]
+  base <- sub("_signed$", "", var)
+  col <- COLOR_BY_VAR[[base]]
+  med <- median(s)
+  ggplot(tibble(x = s), aes(x = x)) +
+    geom_histogram(aes(y = after_stat(density)),
+                   bins = 40, fill = col, alpha = 0.55, color = "white") +
+    geom_vline(xintercept = 0, color = REF) +
+    geom_vline(xintercept = med, color = ACCENT, linewidth = 0.5) +
+    annotate("label", x = Inf, y = Inf,
+             label = sprintf("mediana = %+.2f h", med),
+             hjust = 1.05, vjust = 1.2, size = 2.4, color = HEADER,
+             fill = "white", alpha = 0.9, label.size = 0.3) +
+    labs(x = sprintf("%s con signo (h)",
+                     VAR_LABEL[base]),
+         y = "Densidad") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15)))
+}
+
+panels_abs <- map(VAR_ABS, make_hist_abs)
+panels_sig <- map(VAR_SIG, make_hist_sig)
+
+# Escalas comunes dentro de cada fila para que los paneles sean comparables a
+# igualdad de ejes
+xmax_abs <- ceiling(max(map_dbl(VAR_ABS, ~ max(val_sanos[[.x]]))))
+ymax_abs <- max(map_dbl(VAR_ABS, ~ {
+  s <- val_sanos[[.x]]
+  max(max(hist(s, breaks = 40, plot = FALSE)$density), max(density(s)$y))
+}))
+panels_abs <- map(panels_abs, ~ .x +
+  coord_cartesian(xlim = c(0, xmax_abs), ylim = c(0, ymax_abs * 1.15)))
+
+xmax_sig <- ceiling(max(map_dbl(VAR_SIG, ~ max(abs(val_sanos[[.x]])))))
+ymax_sig <- max(map_dbl(VAR_SIG,
+                        ~ max(hist(val_sanos[[.x]], breaks = 40, plot = FALSE)$density)))
+panels_sig <- map(panels_sig, ~ .x +
+  coord_cartesian(xlim = c(-xmax_sig, xmax_sig), ylim = c(0, ymax_sig * 1.15)))
+
+(panels_abs[[1]] | panels_abs[[2]] | panels_abs[[3]]) /
+(panels_sig[[1]] | panels_sig[[2]] | panels_sig[[3]]) +
+  plot_annotation(
+    tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
+    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 13))
+  )
+```
+
+```{r dist_sjl_resumen, include = FALSE}
+skew_sig <- c(
+  SJL = skew(sjl_s),
+  SJL_sc = skew(sjl_sc_s),
+  SJL_J = skew(sjl_j_s)
+)
+mas_simetrica <- names(skew_sig)[which.min(abs(skew_sig))]
+mas_simetrica_lbl <- VAR_LABEL[mas_simetrica]
+skew_mas_simetrica <- skew_sig[mas_simetrica]
+```
+
+Las tres distribuciones en valor absoluto (Figura 3a-c) muestran el patrón estructural característico del SJL: sesgo positivo claro, masa concentrada cerca de cero y cola que se prolonga hacia valores altos. La progresión SJL → SJL<sub>sc</sub> → SJL<sub>J</sub> empuja la masa hacia la izquierda (medianas `r sprintf("%.2f", med_sjl)` → `r sprintf("%.2f", med_sc)` → `r sprintf("%.2f", med_j)` h) y comprime la cola superior. Los cortes clínicos 1 h y 2 h (líneas discontinuas verticales) dejan a la mayoría de sanos por debajo de la primera cota, una franja sustancial entre 1 y 2 h, y una minoría por encima de 2 h cuya extensión disminuye según la variante (`r sprintf("%.1f", pct_2h)` % en SJL, `r sprintf("%.1f", pct_2h_sc)` % en SJL<sub>sc</sub>, `r sprintf("%.1f", pct_2h_j)` % en SJL<sub>J</sub>).
+
+En el bloque con signo (Figura 3d-f) las tres distribuciones se centran alrededor de una mediana positiva, confirmando visualmente el predominio del retraso vespertino. La diferencia entre variantes se aprecia bien en la forma: el `r mas_simetrica_lbl` es el más simétrico al restar la deuda de sueño, una parte de los sujetos antes clasificados como tardíos cruza al lado negativo y el porcentaje de tardíos cae del `r sprintf("%.1f", pct_tardio_sjl)` % al `r sprintf("%.1f", pct_tardio_sc)` %, mientras la masa se reparte de forma más equilibrada en torno a cero. El SJL<sub>J</sub> con signo, en cambio, muestra un pico muy estrecho cerca de cero porque la fórmula de Jankowski usa solo uno de los extremos del episodio (onset u offset) y produce desplazamientos menores que las medidas que promedian toda la noche; los valores extremos quedan así muy poco representados respecto al SJL clásico.
+
+### Centrado en el SJL convencional: verificación de la (no) normalidad
+
+A partir de este punto el análisis se centra en el SJL clásico (las variantes sleep-corrected y Jankowski quedan para sensibilidad). Antes de elegir la familia de tests inferenciales se examina su distribución empírica sobre la versión absoluta y la versión con signo, con tres elementos complementarios:
+
+1. **Evidencia visual**, histograma con la curva normal teórica superpuesta y Q-Q plot frente a $N(0,1)$. Es el criterio recomendado en la literatura cuando $n$ es grande [10], porque permite distinguir desviaciones sustanciales de desviaciones triviales que ningún test podría discriminar.
+2. **Estadísticos de forma**, asimetría (skewness) y exceso de curtosis para cuantificar la distancia respecto a la normal (en la que ambos valen 0).
+3. **Contraste formal**, el test de Shapiro-Wilk, el más potente para detectar desviaciones de la normalidad y aplicable a este tamaño muestral ($n < 5000$). Se reporta para completar el diagnóstico, aunque a $n$ grande rechace casi por construcción.
+
+```{r normalidad_sjl, fig.width = 12, fig.height = 8, fig.cap = "Figura 4 · Distribución del SJL clásico frente a la normalidad. Fila superior: SJL absoluto. Fila inferior: SJL con signo. (a, c) Histograma con densidad empírica (azul) y curva normal teórica de igual media y DE (rojo discontinuo); línea vertical roja: mediana. (b, d) Q-Q plot frente a N(0, 1); diagonal roja: ajuste a la normal."}
+x_abs <- val_sanos[[PRIMARY]]
+x_sig <- val_sanos[[paste0(PRIMARY, "_signed")]]
+
+make_hist <- function(x, xlab) {
+  ggplot(tibble(v = x), aes(x = v)) +
+    geom_histogram(aes(y = after_stat(density)),
+                   bins = 40, fill = COLOR_SJL, alpha = 0.55, color = "white") +
+    geom_density(color = COLOR_SJL, linewidth = 0.9) +
+    stat_function(fun = dnorm,
+                  args = list(mean = mean(x), sd = sd(x)),
+                  color = ACCENT, linetype = "dashed", linewidth = 0.9) +
+    geom_vline(xintercept = median(x), color = ACCENT,
+               linewidth = 0.4, alpha = 0.6) +
+    labs(x = xlab, y = "Densidad")
+}
+
+make_qq <- function(x, ylab) {
+  df <- tibble(theo = qqnorm(x, plot.it = FALSE)$x, obs = x)
+  ggplot(df, aes(x = theo, y = obs)) +
+    geom_point(alpha = 0.4, size = 1, color = COLOR_SJL) +
+    geom_qq_line(aes(sample = obs), color = ACCENT,
+                 linetype = "dashed", linewidth = 0.7) +
+    labs(x = "Cuantiles teóricos N(0,1)", y = ylab)
+}
+
+p_hist_abs <- make_hist(x_abs, sprintf("%s (h)", PRIMARY_LBL))
+p_qq_abs <- make_qq(x_abs, sprintf("Cuantiles observados de %s (h)", PRIMARY))
+p_hist_sig <- make_hist(x_sig, sprintf("%s con signo (h)", PRIMARY_LBL))
+p_qq_sig <- make_qq(x_sig, sprintf("Cuantiles observados de %s con signo (h)", PRIMARY))
+
+(p_hist_abs | p_qq_abs) /
+(p_hist_sig | p_qq_sig) +
+  plot_annotation(
+    tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
+    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 13))
+  )
+```
+
+```{r export_fig_memoria, include = FALSE}
+dir.create("outputs/memoria/figuras", recursive = TRUE, showWarnings = FALSE)
+fig_dist_memoria <-
+  (panels_abs[[1]] | panels_abs[[2]] | panels_abs[[3]]) /
+  (panels_sig[[1]] | panels_sig[[2]] | panels_sig[[3]]) +
+  plot_annotation(
+    tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
+    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 12))
+  ) &
+  theme_tfm(11)
+ggsave(
+  "outputs/memoria/figuras/fig_distribucion_sjl.png",
+  fig_dist_memoria,
+  width = 9.2, height = 5.3, dpi = 200, device = ragg::agg_png
+)
+```
+
+```{r normalidad_tabla}
+resumen_norm <- function(x, etiqueta) {
+  tibble(
+    Variable = etiqueta,
+    `Asimetría` = sprintf("%+.2f", skew(x)),
+    `Exc. curtosis` = sprintf("%+.2f", kurt_exc(x))
+  )
+}
+
+bind_rows(
+  resumen_norm(x_abs, PRIMARY_LBL),
+  resumen_norm(x_sig, sprintf("%s con signo", PRIMARY_LBL))
+) |>
+  estilo_kable(caption = sprintf(
+    "Tabla 5 · Asimetría y exceso de curtosis del %s en valor absoluto y con signo.",
+    PRIMARY_LBL))
+```
+
+```{r normalidad_resumen, include = FALSE}
+skew_abs <- skew(x_abs)
+kurt_abs <- kurt_exc(x_abs)
+skew_sig <- skew(x_sig)
+kurt_sig <- kurt_exc(x_sig)
+sw_abs <- shapiro.test(x_abs)
+sw_sig <- shapiro.test(x_sig)
+# p-valor en notación científica LaTeX, para que el orden de magnitud sea visible
+# (fmt_p lo caparía en "< 0.001" y ocultaría lo minúsculo que es).
+p_sci <- function(p) {
+  e <- floor(log10(p))
+  m <- p / 10^e
+  sprintf("$%.1f \\times 10^{%d}$", m, e)
+}
+p_abs_sci <- p_sci(sw_abs$p.value)
+p_sig_sci <- p_sci(sw_sig$p.value)
+```
+
+La figura confirma lo que era esperable. El SJL absoluto (Figura 4a-b) muestra un sesgo positivo claro y una cola larga que se prolonga hasta retrasos de varias horas, incompatible con la simetría de la normal: la curva teórica (roja discontinua) infraestima la masa cerca de cero y sobrestima los valores medios. Esta forma queda cuantificada en la Tabla 5 por una asimetría = `r sprintf("%+.2f", skew_abs)` (la normal sería 0) y un exceso de curtosis = `r sprintf("%+.2f", kurt_abs)` (distribución más apuntada y de colas mucho más pesadas que la normal).
+
+El SJL con signo (Figura 4c-d) se aproxima visualmente bastante más a una normal: al permitir negativos, la distribución se centra y recupera buena parte de la simetría aparente. La asimetría cae a `r sprintf("%+.2f", skew_sig)` (todavía moderadamente positiva, reflejo de que el `r sprintf("%.1f", pct_tardio_sjl)` % de los sanos presentan retraso vespertino), y aun así conserva un pico más estrecho y colas más pesadas que la normal (exceso de curtosis = `r sprintf("%+.2f", kurt_sig)`); en el Q-Q plot esto se aprecia como un alejamiento sistemático de la diagonal en los extremos (especialmente en la cola superior, donde aparecen los retrasos vespertinos grandes) pese a un ajuste razonable en el centro.
+
+El contraste de Shapiro-Wilk rechaza la normalidad tanto del SJL absoluto (W = `r sprintf("%.3f", sw_abs$statistic)`, p = `r p_abs_sci`) como del SJL con signo (W = `r sprintf("%.3f", sw_sig$statistic)`, p = `r p_sig_sci`). Es un resultado esperable, ya que a este tamaño muestral (n = `r length(x_abs)`) la potencia del contraste es tan elevada que detecta desviaciones triviales sin relevancia práctica y rechaza casi por construcción, de modo que el p-valor por sí solo deja de ser informativo [10]. Por eso la decisión se apoya sobre todo en la inspección visual del Q-Q plot y en los descriptivos de forma (asimetría y curtosis), que muestran una desviación sustancial y no trivial.
+
+### Implicaciones para los métodos inferenciales
+
+A pesar de la desviación clara de la normalidad documentada arriba, el tamaño muestral del estudio abre un espacio metodológico amplio. El Teorema Central del Límite garantiza que la distribución muestral de estadísticos basados en medias y varianzas (los coeficientes β de una regresión lineal, los t-estadísticos, los F-estadísticos de modelos anidados, los OR de una regresión logística) converge a la distribución teórica aunque los residuos individuales no sigan una normal. Esto significa que, en este documento, la elección entre técnicas paramétricas o no paramétricas (mayoritarias) responde a **qué se quiere expresar en cada análisis**, no a una imposición de la distribución.
+
+A lo largo del documento se aplica esta lógica:
+
+- **Tests no paramétricos** (Mann-Whitney, Kruskal-Wallis, Spearman, Wilcoxon pareado, Dunn post-hoc, Cliff's δ, ε²) en los análisis bivariados descriptivos por su simplicidad, robustez ante outliers e invariancia ante transformaciones monótonas. Su uso natural va acompañado de la **mediana [IQR]** como medida central.
+- **Tests paramétricos** (regresión lineal, F-test de modelos anidados, regresión logística) en los modelos multivariables que necesitan **coeficientes con unidades interpretables** (β en kg/m² por hora adicional de SJL, OR por hora adicional de SJL) o **predicciones puntuales con intervalo**.
+- **Ambos en paralelo** en los puntos donde merece la pena reforzar la conclusión.
+
+La transformación del SJL (log, raíz) se descarta por dos razones convergentes: (a) **interpretabilidad clínica**, ya que la literatura del SJL reporta sistemáticamente en horas, de modo que trabajar sobre una escala transformada haría los hallazgos incomparables con los valores de referencia; (b) **invariancia de los tests no paramétricos**, pues Mann-Whitney y Spearman operan sobre rangos, por lo que cualquier transformación monótona deja los p-valores y tamaños de efecto inalterados.
+
+---
+
+# 3 · Horarios de sueño y diferencias entre días laborables y libres
+
+Esta sección caracteriza los horarios de sueño que componen el SJL: hora de inicio (Sleep Onset, SO), hora de fin (Sleep End, SE) y duración (Sleep Duration, SD), separados por días laborables (W) y libres (F). La pregunta es de dónde proviene mecánicamente el desajuste: ¿retraso al acostarse, fin de sueño más tardío, duración mayor que compensa deuda? Se analiza en dos planos complementarios, intra-sujeto W vs F (Wilcoxon pareado + r biserial de rangos pareado) y entre sujetos estratificados por SJL ≥ 2 h (Mann-Whitney + Cliff's δ). El umbral de 2 h se elige por marcar la franja con efectos clínicos documentados en la literatura. Las medidas se reportan como media ± DE siguiendo la convención cronobiológica para variables de horario [1, 2, 4].
+
+> **Nota sobre las horas del reloj.** SO, SE y MS son cantidades circulares: una hora cercana a las 00:00 puede caer justo antes o justo después de medianoche, y promediarlas de forma aritmética produce artefactos al cruzar ese punto. Por eso se promedian con **media circular** (cada hora se convierte al ángulo correspondiente del reloj de 24 h, se promedian los vectores unitarios y se recupera el ángulo medio) y sus diferencias se calculan como **diferencia angular con signo**, exactamente igual que en el preprocesamiento. Para los contrastes de rangos las horas se alinean respecto a la medianoche. La duración SD, en cambio, es lineal y se promedia de forma aritmética.
+
+## 3.1 Diferencias laborable vs libre (intra-sujeto)
+
+```{r horarios_prep}
+# Aritmética circular sobre el reloj de 24 h, replicando los helpers de
+# preprocesamiento.ipynb (media direccional y diferencia angular con signo).
+norm24 <- function(x) ((x %% 24) + 24) %% 24
+
+mean_circular <- function(x) {
+  x <- norm24(x[!is.na(x)])
+  a <- x / 24 * 2 * pi
+  norm24(atan2(mean(sin(a)), mean(cos(a))) / (2 * pi) * 24)
+}
+
+# Diferencia angular con signo (b - a) acotada a (-12, 12]: b mas tarde que a
+# es positivo (metodo `shorter` del MCTQ).
+diff_circular <- function(b, a) {
+  d <- (b - a) %% 24
+  ifelse(d > 12, d - 24, d)
+}
+
+# Alineacion al reloj centrado en medianoche (= diff_circular(x, 0)) para que
+# los contrastes de rangos crucen las 00:00 sin artefacto.
+center_clock <- function(x) diff_circular(x, 0)
+
+fmt_hhmm <- function(x) {
+  if (is.na(x)) return("–")
+  clock <- norm24(x)
+  h <- floor(clock)
+  m <- round((clock - h) * 60)
+  if (m == 60) { h <- (h + 1) %% 24; m <- 0 }
+  sprintf("%02d:%02d", h, m)
+}
+
+# Hora del reloj: media circular y DE de las desviaciones angulares respecto a
+# ella. Acepta horas crudas [0, 24) o ya centradas (las normaliza).
+fmt_mean_sd_clock <- function(x) {
+  m <- mean_circular(x)
+  sprintf("%s ± %.2f", fmt_hhmm(m), sd(diff_circular(norm24(x), m)))
+}
+
+fmt_mean_sd_dur <- function(x) {
+  sprintf("%.2f ± %.2f", mean(x), sd(x))
+}
+
+# Dataset de trabajo con SO centrado y grupo de SJL ≥ 2 h
+val_horarios <- val_sanos |>
+  mutate(
+    SO_c = center_clock(SO),
+    SOW_c = center_clock(SOW),
+    SOF_c = center_clock(SOF),
+    SJL_alto = factor(
+      ifelse(SJL >= 2, "≥ 2h", "< 2h"),
+      levels = c("< 2h", "≥ 2h")
+    )
+  )
+```
+
+```{r horarios_tabla_tipodia}
+sleep_vars <- tibble::tribble(
+  ~name, ~g, ~w, ~f, ~tipo,
+  "Inicio del sueño (SO)", "SO_c", "SOW_c", "SOF_c", "clock",
+  "Fin del sueño (SE)", "SE", "SEW", "SEF", "clock",
+  "Duración del sueño (SD)", "SD", "SDW", "SDF", "dur",
+  "Punto medio (MS)", NA, "MSW", "MSF", "clock"
+)
+
+filas_tipo <- purrr::pmap_dfr(sleep_vars, function(name, g, w, f, tipo) {
+  fmt <- if (tipo == "clock") fmt_mean_sd_clock else fmt_mean_sd_dur
+  global_str <- if (is.na(g)) "—" else fmt(val_horarios[[g]])
+  wv <- val_horarios[[w]]
+  fv <- val_horarios[[f]]
+  # Diferencia intra-sujeto F - W: angular en horas del reloj, lineal en
+  # duraciones. El contraste pareado se hace sobre esa diferencia.
+  d <- if (tipo == "clock") diff_circular(norm24(fv), norm24(wv)) else fv - wv
+  wt <- suppressWarnings(wilcox.test(d, mu = 0))
+  rb_val <- as.numeric(effectsize::rank_biserial(d, mu = 0)$r_rank_biserial)
+  tibble(
+    Variable = name,
+    Global = global_str,
+    `Laborables (W)` = fmt(wv),
+    `Libres (F)` = fmt(fv),
+    `Δ (F − W)` = sprintf("%+.2f ± %.2f", mean(d), sd(d)),
+    p = fmt_p(wt$p.value),
+    `r biserial de rangos` = sprintf("%+.3f", rb_val),
+    Magnitud = interpreta_cliff(rb_val)
+  )
+})
+
+filas_tipo |>
+  estilo_kable(caption = "Tabla 6 · Horarios de sueño por tipo de día. Reloj: HH:MM ± DE (h). Duraciones: h ± DE (h). Δ: diferencia media ± DE intra-sujeto (libres − laborables) en h. Test: Wilcoxon pareado + r biserial de rangos pareado.")
+```
+
+```{r horarios_tipodia_resumen, include = FALSE}
+delta_so <- mean(diff_circular(val_horarios$SOF, val_horarios$SOW))
+delta_se <- mean(diff_circular(val_horarios$SEF, val_horarios$SEW))
+delta_sd <- mean(val_horarios$SDF - val_horarios$SDW)
+```
+
+Los tres contrastes pareados son altamente significativos, con magnitudes que varían entre variables. En los días libres los sujetos se acuestan `r sprintf('%.0f', delta_so*60)` min más tarde (Δ SO = `r sprintf('%+.2f', delta_so)` h), se levantan `r sprintf('%.0f', delta_se*60)` min más tarde (Δ SE = `r sprintf('%+.2f', delta_se)` h) y duermen `r sprintf('%.0f', delta_sd*60)` min más (Δ SD = `r sprintf('%+.2f', delta_sd)` h). El patrón es el descrito por Roenneberg [2]: el despertador rígido entre semana se libera en libres, lo que produce la diferencia mayor en SE; el desplazamiento más modesto de SO explica que la duración crezca solo de forma parcial, reflejo de la recuperación incompleta de la deuda acumulada en laborables.
+
+## 3.2 Estratificación por SJL ≥ 2 h
+
+¿Qué distingue a un sujeto con SJL ≥ 2 h de uno con SJL moderado o ausente? Si el SJL se debe principalmente al retraso del fin de sueño en libres, esperaríamos diferencias grandes en SEF entre grupos pero pequeñas en SOF y SDF; si se debe al retraso del inicio, lo contrario. El análisis es descriptivo y no ajusta por covariables: la primera fila de la Tabla 7 reporta la edad por grupo y la proporción de mujeres se comenta en el texto, para valorar la comparabilidad demográfica de la comparación.
+
+```{r horarios_tabla_sjl}
+n_no <- sum(val_horarios$SJL_alto == "< 2h")
+n_si <- sum(val_horarios$SJL_alto == "≥ 2h")
+
+# Filas de composición demográfica de cada grupo SJL.
+# Edad: media ± DE por grupo + Mann-Whitney; sexo: solo descriptivo (% mujeres)
+# porque las proporciones son comparables y el contraste no aporta información.
+edad_no <- val_horarios[[EDAD_COL]][val_horarios$SJL_alto == "< 2h"]
+edad_si <- val_horarios[[EDAD_COL]][val_horarios$SJL_alto == "≥ 2h"]
+p_edad <- wilcox.test(edad_no, edad_si)$p.value
+cd_edad <- pluck_cliff(effectsize::cliffs_delta(edad_si, edad_no))
+
+sx <- val_horarios$sexo
+sx_no_muj <- sum(sx[val_horarios$SJL_alto == "< 2h"] == "F")
+sx_si_muj <- sum(sx[val_horarios$SJL_alto == "≥ 2h"] == "F")
+sx_no_tot <- sum(val_horarios$SJL_alto == "< 2h")
+sx_si_tot <- sum(val_horarios$SJL_alto == "≥ 2h")
+
+filas_comp <- tibble(
+  Variable = "Edad",
+  `SJL < 2h` = sprintf("%.1f ± %.1f", mean(edad_no), sd(edad_no)),
+  `SJL ≥ 2h` = sprintf("%.1f ± %.1f", mean(edad_si), sd(edad_si)),
+  `Δ (≥2h − <2h)` = sprintf("%+.1f", mean(edad_si) - mean(edad_no)),
+  p = fmt_p(p_edad),
+  `Cliff δ` = sprintf("%+.3f", cd_edad),
+  Magnitud = interpreta_cliff(cd_edad)
+)
+
+# Filas de horarios de sueño por grupo 
+sleep_vars_sjl <- tibble::tribble(
+  ~var, ~name, ~tipo,
+  "SOW_c", "SOW (inicio · laborables)", "clock",
+  "SOF_c", "SOF (inicio · libres)", "clock",
+  "SEW", "SEW (fin · laborables)", "clock",
+  "SEF", "SEF (fin · libres)", "clock",
+  "SDW", "SDW (duración · laborables)", "dur",
+  "SDF", "SDF (duración · libres)", "dur"
+)
+
+stats_sjl <- purrr::pmap_dfr(sleep_vars_sjl, function(var, name, tipo) {
+  x <- val_horarios[[var]]
+  g <- val_horarios$SJL_alto
+  x_no <- x[g == "< 2h"]
+  x_si <- x[g == "≥ 2h"]
+  fmt <- if (tipo == "clock") fmt_mean_sd_clock else fmt_mean_sd_dur
+  if (tipo == "clock") {
+    # Diferencia entre grupos = diferencia angular de las medias circulares;
+    # el contraste de rangos, sobre las horas alineadas a medianoche.
+    delta <- diff_circular(mean_circular(x_si), mean_circular(x_no))
+    xa_no <- center_clock(norm24(x_no)); xa_si <- center_clock(norm24(x_si))
+  } else {
+    delta <- mean(x_si) - mean(x_no)
+    xa_no <- x_no; xa_si <- x_si
+  }
+  tibble(
+    var = var, Variable = name,
+    str_no = fmt(x_no), str_si = fmt(x_si),
+    delta_h = delta,
+    p = suppressWarnings(wilcox.test(xa_no, xa_si)$p.value),
+    cd_val = pluck_cliff(effectsize::cliffs_delta(xa_si, xa_no))
+  )
+})
+
+filas_horarios <- stats_sjl |>
+  transmute(
+    Variable,
+    `SJL < 2h` = str_no,
+    `SJL ≥ 2h` = str_si,
+    `Δ (≥2h − <2h)` = sprintf("%+.2f", delta_h),
+    p = fmt_p(p),
+    `Cliff δ` = sprintf("%+.3f", cd_val),
+    Magnitud = interpreta_cliff(cd_val)
+  )
+
+bind_rows(filas_comp, filas_horarios) |>
+  estilo_kable(caption = sprintf("Tabla 7 · Estratificación por presencia de SJL (umbral ≥ 2 h). n SJL < 2h = %d (%.1f %%); n SJL ≥ 2h = %d (%.1f %%). Composición: edad en años (media ± DE). Horarios: reloj HH:MM ± DE (h), duraciones h ± DE (h), Δ en h. Test: Mann-Whitney + Cliff's δ.", n_no, 100*n_no/(n_no+n_si), n_si, 100*n_si/(n_no+n_si)))
+```
+
+```{r horarios_sjl_resumen, include = FALSE}
+pick <- function(col, name) stats_sjl[[col]][stats_sjl$var == name]
+d_sow <- pick("delta_h", "SOW_c"); d_sof <- pick("delta_h", "SOF_c")
+d_sew <- pick("delta_h", "SEW"); d_sef <- pick("delta_h", "SEF")
+d_sdw <- pick("delta_h", "SDW"); d_sdf <- pick("delta_h", "SDF")
+cd_sof <- pick("cd_val", "SOF_c"); cd_sef <- pick("cd_val", "SEF")
+
+# Recuperación intra-grupo: cuánto más se duerme los libres respecto a los
+# laborables dentro de cada grupo de SJL.
+rec_lo <- with(val_horarios[val_horarios$SJL_alto == "< 2h", ],
+               mean(SDF) - mean(SDW))
+rec_hi <- with(val_horarios[val_horarios$SJL_alto == "≥ 2h", ],
+               mean(SDF) - mean(SDW))
+```
+
+El patrón es revelador. Los sujetos con SJL ≥ 2 h no se distinguen por la hora de acostarse los días laborables: la SOW del grupo es prácticamente idéntica a la del resto (diferencia = `r sprintf("%+.0f", d_sow*60)` min, magnitud negligible). El valor que la Tabla 7 muestra para la SOW coincide en ambos grupos solo al redondear a HH:MM, ya que las medias circulares y las desviaciones reales difieren en menos de medio minuto, de modo que la igualdad aparente no es un error sino el reflejo de esa práctica ausencia de diferencia. Lo que separa a los dos grupos son los horarios de los días libres: la SOF se retrasa `r sprintf("%.0f", d_sof*60)` min y la SEF se retrasa `r sprintf("%.0f", d_sef*60)` min en el grupo con SJL ≥ 2 h. El SJL ≥ 2 h no se asocia, por tanto, con un patrón vespertino expresado de forma persistente a lo largo de la semana, sino con un desplazamiento sistemático de la ventana de sueño hacia la madrugada en los días libres, con Cliff's δ = `r sprintf("%+.3f", cd_sof)` (`r interpreta_cliff(cd_sof)`) en SOF y `r sprintf("%+.3f", cd_sef)` (`r interpreta_cliff(cd_sef)`) en SEF.
+
+Llama la atención también que el grupo con SJL ≥ 2 h tiene SEW más temprana (Δ = `r sprintf("%+.0f", d_sew*60)` min) y SDW más corta (Δ = `r sprintf("%+.0f", d_sdw*60)` min): a igual hora de acostarse, se levantan antes y duermen menos los días laborables. La SDF en absoluto es también ligeramente menor (Δ = `r sprintf("%+.0f", d_sdf*60)` min), pero la recuperación intra-sujeto F − W sí es mayor en este grupo: ganan `r sprintf("%.0f", rec_hi*60)` min de sueño los libres frente a los `r sprintf("%.0f", rec_lo*60)` min del grupo SJL < 2 h, compensando parcialmente la mayor deuda acumulada en laborables. Aun así, esa recuperación no llega a cerrar la brecha (siguen durmiendo menos los libres que el grupo de referencia), por lo que el SJL ≥ 2 h refleja sobre todo un desplazamiento de fase, no una extensión proporcional del sueño.
+
+En composición demográfica, las proporciones de mujeres son comparables (`r sprintf('%.1f%%', 100*sx_no_muj/sx_no_tot)` con SJL < 2 h frente a `r sprintf('%.1f%%', 100*sx_si_muj/sx_si_tot)` con SJL ≥ 2 h) y `r if (p_edad < 0.05) sprintf('el grupo SJL ≥ 2 h es en promedio %.1f años %s (p = %s)', abs(mean(edad_si) - mean(edad_no)), ifelse(mean(edad_si) < mean(edad_no), 'más joven', 'mayor'), fmt_p(p_edad)) else sprintf('la edad media no difiere significativamente entre grupos (Δ = %+.1f años, p = %s)', mean(edad_si) - mean(edad_no), fmt_p(p_edad))`. 
+
+```{r horarios_timeline, fig.width = 11, fig.height = 5, fig.cap = "Figura 5 · Ventana media de sueño (SO → SE) por grupo de SJL (< 2 h vs ≥ 2 h) y tipo de día (laborables vs libres). Barra horizontal: de SO medio a SE medio. Puntos: SO y SE con su valor numérico. Línea vertical gris discontinua: medianoche."}
+df_timeline <- val_horarios |>
+  group_by(SJL_alto) |>
+  summarise(
+    SOW = center_clock(mean_circular(SOW_c)),
+    SEW = mean_circular(SEW),
+    SOF = center_clock(mean_circular(SOF_c)),
+    SEF = mean_circular(SEF),
+    .groups = "drop"
+  ) |>
+  tidyr::pivot_longer(-SJL_alto, names_to = "var", values_to = "h") |>
+  dplyr::mutate(
+    dia = ifelse(stringr::str_sub(var, -1) == "W", "Laborables", "Libres"),
+    extremo = ifelse(stringr::str_sub(var, 1, 2) == "SO", "inicio", "fin")
+  ) |>
+  dplyr::select(-var) |>
+  tidyr::pivot_wider(names_from = extremo, values_from = h) |>
+  dplyr::mutate(
+    dia = factor(dia, levels = c("Laborables", "Libres")),
+    label_grupo = paste0("SJL ", as.character(SJL_alto))
+  )
+
+ggplot(df_timeline, aes(y = dia, color = dia)) +
+  geom_segment(aes(x = inicio, xend = fin), linewidth = 8, alpha = 0.55,
+               lineend = "round") +
+  geom_point(aes(x = inicio), size = 3) +
+  geom_point(aes(x = fin), size = 3) +
+  geom_text(aes(x = inicio, label = sapply(inicio, fmt_hhmm)),
+            vjust = -1.4, size = 3.5, color = HEADER, fontface = "bold") +
+  geom_text(aes(x = fin, label = sapply(fin, fmt_hhmm)),
+            vjust = -1.4, size = 3.5, color = HEADER, fontface = "bold") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = REF, linewidth = 0.4) +
+  facet_wrap(~ label_grupo, ncol = 1, strip.position = "left") +
+  scale_x_continuous(
+    breaks = seq(-2, 12, 2),
+    labels = function(x) sapply(x, fmt_hhmm),
+    expand = expansion(mult = c(0.05, 0.05))
+  ) +
+  scale_color_manual(values = c("Laborables" = COLOR_SJL, "Libres" = ACCENT)) +
+  labs(x = "Hora del día", y = NULL, color = "Tipo de día") +
+  theme(legend.position = "top",
+        strip.placement = "outside",
+        strip.text.y.left = element_text(angle = 0, face = "bold", color = HEADER))
+```
+
+La figura resume gráficamente el hallazgo central: en el grupo con SJL < 2 h (panel superior) las ventanas de sueño laborable y libre son cuasi-paralelas, con un desplazamiento mínimo. En el grupo con SJL ≥ 2 h (panel inferior) la ventana de los días libres se desplaza claramente `r sprintf("%.1f", mean(c(d_sof, d_sef)))` h hacia la derecha (es decir, hacia la madrugada y la mañana), manteniendo una duración casi idéntica (Δ SDF = `r sprintf("%+.0f", d_sdf*60)` min). No es que duerman más en los libres, es que duermen *más tarde*.
+
+---
+
+# 4 · SJL y edad
+
+Algunos estudios describen un descenso aproximadamente lineal del SJL con la edad a partir de la adolescencia tardía [13]. Se examina la relación desde dos perspectivas: continua (regresión lineal + Spearman) y categórica por franjas etarias (Kruskal-Wallis + Dunn-Holm). El análisis se presenta sin ajuste por sexo: la cohorte está equilibrada en sexo (Tabla 2) y la sección 5 mostrará que el sexo no se asocia con el SJL, por lo que la lectura marginal SJL-edad no requiere control demográfico adicional.
+
+## 4.1 Relación continua
+
+Tres elementos en el gráfico:
+
+- **Regresión lineal** `SJL ~ edad`: β = cambio medio del SJL por año, con t, p y R². Banda = IC 95 % del ajuste. La OLS aporta una pendiente con unidades interpretables (minutos por año).
+- **Mediana del SJL por franjas de 5 años**, restringida a franjas con n ≥ 20 sujetos para evitar inestabilidad en los extremos etarios. Referencia descriptiva libre de supuesto funcional.
+- **Spearman ρ** como complemento no paramétrico: si lineal y rangos coinciden en signo y significancia, la asociación es robusta a la elección del modelo.
+
+```{r sjl_edad_continuo, fig.width = 10, fig.height = 5.5, fig.cap = "Figura 6 · SJL frente a edad continua. Puntos: SJL individual. Línea roja con banda: regresión lineal con IC 95 %. Línea oscura con puntos: mediana del SJL por franjas de 5 años (franjas con n ≥ 20 sujetos). Anotación interna: β, t, p, R² de la regresión lineal y ρ de Spearman."}
+sub_edad <- val_sanos |>
+  mutate(edad = .data[[EDAD_NUM]], sjl = .data[[PRIMARY]])
+
+# Regresión lineal SJL ~ edad: β en horas por año, con t, p, R²
+lin_fit <- lm(sjl ~ edad, data = sub_edad)
+lin_summ <- summary(lin_fit)
+beta_lin <- coef(lin_fit)[["edad"]]
+t_lin <- lin_summ$coefficients["edad", "t value"]
+p_lin <- lin_summ$coefficients["edad", "Pr(>|t|)"]
+r2_lin <- lin_summ$r.squared
+
+# Spearman edad ~ SJL (complemento no paramétrico)
+rho_sp <- cor.test(sub_edad$edad, sub_edad$sjl, method = "spearman")
+
+# Mediana del SJL por franjas de 5 años, filtrando franjas con n < 20 para
+# evitar el repunte espurio de la cola etaria (pocos sujetos → mediana inestable).
+edad_floor <- floor(min(sub_edad$edad) / 5) * 5
+edad_ceil <- ceiling(max(sub_edad$edad) / 5) * 5
+bins5 <- seq(edad_floor, edad_ceil, by = 5)
+med_edad_bin <- sub_edad |>
+  mutate(bin = cut(edad, breaks = bins5, include.lowest = TRUE, right = FALSE)) |>
+  group_by(bin) |>
+  summarise(edad = mean(edad), sjl_med = median(sjl),
+            n_bin = dplyr::n(), .groups = "drop") |>
+  filter(n_bin >= 20)
+
+annot <- sprintf(
+  "Regresión lineal: β = %+.4f h/año · t = %.2f · p = %s · R² = %.3f\nSpearman ρ = %+.3f · p = %s",
+  beta_lin, t_lin, fmt_p(p_lin), r2_lin,
+  rho_sp$estimate, fmt_p(rho_sp$p.value)
+)
+
+# Anclaje explícito de la etiqueta dentro del rango de datos (x = Inf con
+# hjust > 1 desbordaba el panel por la derecha).
+x_lab <- max(sub_edad$edad) - 0.5
+y_lab <- max(sub_edad$sjl)
+
+ggplot(sub_edad, aes(x = edad, y = sjl)) +
+  geom_point(alpha = 0.25, size = 0.8, color = COLOR_SJL) +
+  # Mediana por bin (puntos + línea punteada conectando)
+  geom_line(data = med_edad_bin, aes(x = edad, y = sjl_med),
+            color = HEADER, linetype = "dotted", linewidth = 0.55) +
+  geom_point(data = med_edad_bin, aes(x = edad, y = sjl_med),
+             color = HEADER, size = 1.6) +
+  # Regresión lineal con su banda IC95% del ajuste
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
+              color = ACCENT, fill = ACCENT, alpha = 0.18, linewidth = 1) +
+  annotate("label", x = x_lab, y = y_lab, label = annot,
+           hjust = 1, vjust = 1, size = 3.8, color = HEADER,
+           fill = "white", alpha = 0.92, label.size = 0.3,
+           label.padding = unit(0.30, "lines")) +
+  labs(x = "Edad (años)", y = sprintf("%s (h)", PRIMARY_LBL)) +
+  expand_limits(y = 0)
+```
+
+El SJL desciende de forma aproximadamente lineal con la edad: β = `r sprintf('%+.4f', beta_lin)` h/año (t = `r sprintf('%.2f', t_lin)`, p = `r fmt_p(p_lin)`), unos `r sprintf('%.2f', abs(beta_lin)*60)` minutos menos por año adicional, magnitud coherente con la reportada por Gottlieb et al. [13]. El Spearman ρ = `r sprintf('%+.3f', rho_sp$estimate)` (p = `r fmt_p(rho_sp$p.value)`) confirma la misma asociación monótona y negativa sobre los rangos.
+
+## 4.2 Categorización por grupos etarios
+
+El descenso se examina ahora por franjas etarias mediante **Kruskal-Wallis** sobre las seis franjas, con ε² como tamaño de efecto del omnibus, post-hoc Dunn-Holm sobre los 15 pares y Cliff's δ por par.
+
+```{r sjl_edad_grupo_n, include = FALSE}
+counts_age <- val_sanos |> add_grupo_edad() |> count(grupo_edad)
+n_min_age <- min(counts_age$n); g_min_age <- counts_age$grupo_edad[which.min(counts_age$n)]
+n_max_age <- max(counts_age$n); g_max_age <- counts_age$grupo_edad[which.max(counts_age$n)]
+ratio_age <- round(n_max_age / n_min_age)
+```
+
+Las franjas no están equilibradas (`r n_min_age` sujetos en `r as.character(g_min_age)` vs `r n_max_age` en `r as.character(g_max_age)`, ratio ≈ 1:`r ratio_age`). Kruskal-Wallis y Dunn no se sesgan por el desbalance, pero la potencia es menor en las franjas pequeñas: en pares no significativos que involucren a `r as.character(g_min_age)`, el Cliff δ es decisivo (magnitud negligible = ausencia real; pequeño-mediano con p ns = posible falta de potencia).
+
+```{r sjl_edad_grupo_stats}
+sub_grupo_edad <- val_sanos |>
+  add_grupo_edad() |>
+  mutate(grupo_edad = factor(grupo_edad, levels = EDAD_LABELS),
+         sjl = .data[[PRIMARY]])
+
+# Omnibus: Kruskal-Wallis + ε²
+kw <- sub_grupo_edad |> kruskal_test(sjl ~ grupo_edad)
+eps2 <- effectsize::rank_epsilon_squared(sjl ~ grupo_edad, data = sub_grupo_edad)
+eps2_val <- eps2$rank_epsilon_squared
+
+# Post-hoc Dunn-Holm enriquecido con Cliff δ por par
+dunn <- sub_grupo_edad |>
+  dunn_test(sjl ~ grupo_edad, p.adjust.method = "holm") |>
+  add_cliff_to_dunn(sub_grupo_edad, "sjl", "grupo_edad")
+
+render_dunn_table(
+  dunn,
+  caption = "Tabla 8 · Post-hoc Dunn-Holm de SJL entre las seis franjas etarias."
+)
+```
+
+> **Códigos de significancia:** `****` p < 0.0001 · `***` p < 0.001 · `**` p < 0.01 · `*` p < 0.05 · `ns` = no significativo (p ≥ 0.05). **Interpretación de Cliff's δ**: $|\delta| < 0.147$ negligible · $< 0.33$ pequeño · $< 0.474$ mediano · $\geq 0.474$ grande. **Dirección del signo:** δ > 0 ⇔ el grupo de la izquierda del par (el más joven) tiene mayor SJL; δ < 0 ⇔ lo tiene el de la derecha (el de mayor edad).
+
+```{r sjl_edad_grupo_plot, fig.width = 11, fig.height = 5.8, fig.cap = "Figura 7 · SJL por grupo etario. Línea horizontal roja discontinua: mediana global de referencia. Corchetes superiores: comparaciones entre franjas adyacentes (post-hoc Dunn-Holm). Asteriscos según códigos de la nota inmediatamente superior."}
+med_edad_grupo <- sub_grupo_edad |>
+  group_by(grupo_edad) |>
+  summarise(med = median(sjl), .groups = "drop")
+
+adj_pairs <- build_adj_pairs(EDAD_LABELS, dunn)
+
+y_max <- max(sub_grupo_edad$sjl)
+y_brk <- y_max * 1.04
+y_lim <- y_max * 1.22
+
+ggplot(sub_grupo_edad, aes(x = grupo_edad, y = sjl, color = grupo_edad, fill = grupo_edad)) +
+  geom_jitter(width = 0.15, alpha = 0.18, size = 0.5, show.legend = FALSE) +
+  stat_boxplot(geom = "errorbar", width = 0.22, linewidth = 0.5,
+               show.legend = FALSE) +
+  geom_boxplot(alpha = 0.30, outlier.shape = NA,
+               width = 0.55, fatten = 2.2, linewidth = 0.55,
+               show.legend = FALSE) +
+  stat_summary(fun = mean, geom = "point", shape = 23,
+               fill = "white", color = HEADER, size = 2.8, stroke = 0.6) +
+  scale_color_manual(values = PAL_EDAD) +
+  scale_fill_manual(values = PAL_EDAD) +
+  geom_label(data = med_edad_grupo,
+             aes(x = grupo_edad, y = med, label = sprintf("%.2f h", med)),
+             color = HEADER, fontface = "bold", size = 4,
+             fill = "white", label.size = 0,
+             label.padding = unit(0.18, "lines"),
+             inherit.aes = FALSE) +
+  geom_hline(yintercept = MED_SJL_SANOS, color = ACCENT,
+             linetype = "dashed", linewidth = 0.4) +
+  add_corchetes_signif(adj_pairs, y_brk, y_max) +
+  scale_y_continuous(limits = c(0, y_lim),
+                     expand = expansion(mult = c(0, 0)),
+                     breaks = scales::pretty_breaks(6)) +
+  scale_x_discrete(expand = expansion(add = c(0.45, 0.55))) +
+  labs(x = "Grupo de edad", y = sprintf("%s (h)", PRIMARY_LBL))
+```
+
+```{r sjl_edad_grupo_resumen, include = FALSE}
+p_jovenes <- dunn_pair(dunn, "13-17", "18-24")
+p_inicio_laboral <- dunn_pair(dunn, "18-24", "25-40")
+p_meseta <- dunn_pair(dunn, "25-40", "41-50")
+p_pre_jub <- dunn_pair(dunn, "41-50", "51-64")
+p_jubilacion <- dunn_pair(dunn, "51-64", "≥65")
+p_extremos <- dunn_pair(dunn, "13-17", "≥65")
+
+med_1317 <- dunn_group_median(med_edad_grupo, "grupo_edad", "13-17")
+med_1824 <- dunn_group_median(med_edad_grupo, "grupo_edad", "18-24")
+med_2540 <- dunn_group_median(med_edad_grupo, "grupo_edad", "25-40")
+med_4150 <- dunn_group_median(med_edad_grupo, "grupo_edad", "41-50")
+med_5164 <- dunn_group_median(med_edad_grupo, "grupo_edad", "51-64")
+med_65 <- dunn_group_median(med_edad_grupo, "grupo_edad", "≥65")
+```
+
+El omnibus de Kruskal-Wallis rechaza la igualdad de SJL entre las seis franjas etarias (H = `r sprintf('%.2f', kw$statistic)`, p = `r fmt_p(kw$p)`, ε² = `r sprintf('%.3f', eps2_val)`). La Figura 7 y la Tabla 8 matizan la lectura lineal de la subsección anterior: el descenso no es uniforme franja a franja sino escalonado, con mesetas separadas por transiciones puntuales, y los tamaños de efecto Cliff δ son decisivos para no sobreinterpretar los p-valores. Los adolescentes (13-17) y los adultos jóvenes (18-24) son indistinguibles entre sí (medianas `r sprintf('%.2f', med_1317)` vs `r sprintf('%.2f', med_1824)` h, Cliff δ = `r sprintf('%+.3f', p_jovenes$cliff)`, `r interpreta_cliff(p_jovenes$cliff)`, `r fmt_sig(p_jovenes$p)`), ambos en la parte alta del recorrido. El primer salto significativo aparece entre 18-24 y 25-40 (p `r fmt_sig(p_inicio_laboral$p)`, Cliff δ = `r sprintf('%+.3f', p_inicio_laboral$cliff)`, `r interpreta_cliff(p_inicio_laboral$cliff)`), coherente con la incorporación al mercado laboral y la imposición de horarios rígidos los días de trabajo. Entre 25-40 y 41-50 el SJL se estabiliza en una meseta (medianas `r sprintf('%.2f', med_2540)` vs `r sprintf('%.2f', med_4150)` h, Cliff δ = `r sprintf('%+.3f', p_meseta$cliff)`, `r interpreta_cliff(p_meseta$cliff)`, `r fmt_sig(p_meseta$p)`); el par 41-50 → 51-64 (p `r fmt_sig(p_pre_jub$p)`, Cliff δ = `r sprintf('%+.3f', p_pre_jub$cliff)`, `r interpreta_cliff(p_pre_jub$cliff)`). La transición entre la franja laboral y la de jubilación ocurre en 51-64 → ≥65 (p `r fmt_sig(p_jubilacion$p)`, Cliff δ = `r sprintf('%+.3f', p_jubilacion$cliff)`, `r interpreta_cliff(p_jubilacion$cliff)`), reflejo de la pérdida de rigidez horaria con la jubilación. Comparando los extremos del recorrido, 13-17 vs ≥65 alcanza la mayor magnitud del análisis (Cliff δ = `r sprintf('%+.3f', p_extremos$cliff)`, `r interpreta_cliff(p_extremos$cliff)`). El grupo ≥65 destaca también visualmente con una caja claramente más comprimida y desplazada hacia cero (mediana `r sprintf('%.2f', med_65)` h, IQR estrecho), y los diamantes de la media quedan sistemáticamente por encima de la mediana en todas las franjas, confirmando la asimetría positiva del SJL descrita en la sección 2.
+
+# 5 · SJL y sexo
+
+Tras confirmar en la sección 4 que el SJL desciende con la edad, conviene introducir la edad como covariable al comparar el SJL entre sexos: si la distribución etaria difiriese entre mujeres y hombres, parte del contraste podría atribuirse a la edad y no al sexo. En esta cohorte las edades medias por sexo son muy similares (Tabla 2), así que el ajuste no debería cambiar la conclusión, pero se incluye para limpiar el contraste. Dos pasos:
+
+- **Crudo**: Mann–Whitney U entre grupos y Cliff's δ con IC95% asintótico como tamaño de efecto.
+- **Ajustado por edad**: ANCOVA de rangos de tipo Quade [14], en el que se rankean SJL y edad sobre toda la muestra, se regresa rank(SJL) sobre rank(edad) y se aplican Mann–Whitney y Cliff's δ sobre los residuos de ese ajuste. Es el equivalente no paramétrico al ANCOVA clásico, no asume normalidad y preserva la lógica rank-based del análisis crudo.
+
+```{r sjl_sexo_test}
+sub_sexo <- val_sanos |>
+  mutate(sexo = as.character(sexo),
+         edad = .data[[EDAD_NUM]],
+         sjl = .data[[PRIMARY]])
+
+# Crudo
+mw <- wilcox.test(sjl ~ sexo, data = sub_sexo)
+
+# Cliff's δ con forma de dos vectores para que el signo sea inequívoco
+# (independiente del orden alfabético del factor en una llamada por fórmula).
+# Convención de esta sección: δ > 0 ⇔ las mujeres tienen mayor SJL que los
+# hombres (la nota direccional bajo la Tabla 9 lo recoge para el lector).
+sjl_F <- sub_sexo$sjl[sub_sexo$sexo == "F"]
+sjl_M <- sub_sexo$sjl[sub_sexo$sexo == "M"]
+cd <- effectsize::cliffs_delta(sjl_F, sjl_M)
+cd_val <- pluck_cliff(cd); cd_lo <- as.numeric(cd$CI_low); cd_hi <- as.numeric(cd$CI_high)
+
+# Ajustado por edad: rank-ANCOVA de Quade
+# Se rankean SJL y edad, se regresa rank(SJL) ~ rank(edad), y los residuos
+# (rank(SJL) "limpio" de la asociación con la edad) se comparan entre sexos.
+sub_sexo <- sub_sexo |> mutate(r_sjl = rank(sjl), r_edad = rank(edad))
+sub_sexo$res_quade <- residuals(lm(r_sjl ~ r_edad, data = sub_sexo))
+
+mw_adj <- wilcox.test(res_quade ~ sexo, data = sub_sexo)
+res_F <- sub_sexo$res_quade[sub_sexo$sexo == "F"]
+res_M <- sub_sexo$res_quade[sub_sexo$sexo == "M"]
+cd_adj <- effectsize::cliffs_delta(res_F, res_M)
+cd_adj_val <- pluck_cliff(cd_adj)
+cd_adj_lo <- as.numeric(cd_adj$CI_low); cd_adj_hi <- as.numeric(cd_adj$CI_high)
+
+med_muj <- median(sub_sexo$sjl[sub_sexo$sexo == "F"])
+med_hom <- median(sub_sexo$sjl[sub_sexo$sexo == "M"])
+
+tibble(
+  Análisis = c("Mann–Whitney U (crudo)",
+               "Cliff's δ (crudo)",
+               "Mann–Whitney U (ajustado por edad, Quade)",
+               "Cliff's δ (ajustado por edad)"),
+  Estadístico = c(formatC(mw$statistic, format = "d"),
+                  sprintf("%+.3f (%s)", cd_val, interpreta_cliff(cd_val)),
+                  formatC(mw_adj$statistic, format = "d"),
+                  sprintf("%+.3f (%s)", cd_adj_val, interpreta_cliff(cd_adj_val))),
+  `p / IC95%` = c(fmt_p(mw$p.value),
+                  sprintf("[%+.3f, %+.3f]", cd_lo, cd_hi),
+                  fmt_p(mw_adj$p.value),
+                  sprintf("[%+.3f, %+.3f]", cd_adj_lo, cd_adj_hi))
+) |> estilo_kable(caption = "Tabla 9 · SJL por sexo: Mann–Whitney y Cliff's δ, crudos y ajustados por edad mediante ANCOVA de rangos de Quade.")
+```
+
+> **Interpretación de Cliff's δ**: $|\delta| < 0.147$ negligible · $< 0.33$ pequeño · $< 0.474$ mediano · $\geq 0.474$ grande. **Dirección del signo:** δ > 0 ⇔ las mujeres tienen mayor SJL que los hombres; δ < 0 ⇔ lo contrario.
+
+```{r sjl_sexo_plot, fig.width = 7, fig.height = 4.8, fig.cap = sprintf("Figura 8 · SJL por sexo (Mujer: n = %d; Hombre: n = %d). Caja: IQR. Bigotes: 1.5·IQR. Línea horizontal gruesa: mediana. Diamante: media. Puntos: sujetos individuales. Corchete superior: p del Mann–Whitney ajustado por edad mediante rank-ANCOVA de Quade (Tabla 9); ns: no significativo a α = 0.05.", sum(sub_sexo$sexo == 'F'), sum(sub_sexo$sexo == 'M'))}
+# Etiqueta de significancia del Mann–Whitney AJUSTADO por edad (Quade);
+# en el gráfico solo se muestra el valor de p (sin texto "ajustado por edad").
+p_show <- mw_adj$p.value
+sig_label <- sprintf("p = %s %s", fmt_p(p_show), sig_stars(p_show))
+
+# F/M → Mujer/Hombre (orden canónico: Mujer a la izquierda, Hombre a la derecha)
+sub_plot <- sub_sexo |>
+  mutate(sexo_lab = factor(relabel_nivel(sexo, "sexo"),
+                           levels = c("Mujer", "Hombre")))
+
+# Medianas + posición horizontal de la etiqueta. La etiqueta se coloca a la
+# derecha de cada caja (fuera de su borde) para no quedar tapada por la
+# propia línea de mediana; una pequeña marca horizontal conecta el borde
+# de la caja con la etiqueta a la altura exacta de la mediana.
+med_sexo <- sub_plot |>
+  group_by(sexo_lab) |>
+  summarise(med = median(.data[[PRIMARY]]), .groups = "drop") |>
+  mutate(x_num = as.integer(sexo_lab),
+         x_edge = x_num + 0.25, # borde derecho de la caja (width = 0.5)
+         x_label = x_num + 0.42) # extremo izquierdo de la etiqueta
+
+# Eje y guiado por el máximo observado para que entre todo (incluidos
+# los puntos del jitter) y quede aire para el corchete de significancia.
+y_max <- max(sub_plot[[PRIMARY]])
+y_top <- y_max * 1.03
+cap_h <- y_max * 0.022      # alto de los topes verticales del corchete
+star_off <- y_max * 0.045   # distancia del texto al corchete
+
+ggplot(sub_plot, aes(x = sexo_lab, y = .data[[PRIMARY]],
+                     color = sexo_lab, fill = sexo_lab)) +
+  # Nube de puntos individuales (jitter horizontal, baja opacidad)
+  geom_jitter(width = 0.18, height = 0, size = 0.7, alpha = 0.18,
+              show.legend = FALSE) +
+  # Bigotes con caps horizontales en los extremos
+  stat_boxplot(geom = "errorbar", width = 0.18, linewidth = 0.5,
+               show.legend = FALSE) +
+  # Caja translúcida sin sus propios outliers (ya se ven en el jitter).
+  # `fatten` engrosa la línea de la mediana para que se lea bien.
+  geom_boxplot(alpha = 0.25, width = 0.5,
+               outlier.shape = NA, linewidth = 0.55,
+               fatten = 2.2, show.legend = FALSE) +
+  scale_color_manual(values = PAL_SEXO) +
+  scale_fill_manual(values = PAL_SEXO) +
+  # Media: diamante blanco con borde HEADER
+  stat_summary(fun = mean, geom = "point", shape = 23,
+               fill = "white", color = HEADER, size = 2.8, stroke = 0.7) +
+  # Marca horizontal a la altura exacta de la mediana, desde el borde
+  # derecho de la caja hasta la etiqueta. Así el valor numérico nunca
+  # queda solapado con la línea gruesa de la mediana.
+  geom_segment(data = med_sexo,
+               aes(x = x_edge, xend = x_label, y = med, yend = med),
+               color = HEADER, linewidth = 0.45,
+               inherit.aes = FALSE) +
+  geom_label(data = med_sexo,
+             aes(x = x_label, y = med, label = sprintf("%.2f h", med)),
+             color = HEADER, fontface = "bold", size = 4.2,
+             fill = "white", label.size = 0,
+             label.padding = unit(0.20, "lines"),
+             hjust = 0,
+             inherit.aes = FALSE) +
+  # Corchete con el p ajustado por edad (sin texto adicional)
+  annotate("segment", x = 1, xend = 2, y = y_top, yend = y_top,
+           color = HEADER, linewidth = 0.4) +
+  annotate("segment", x = 1, xend = 1, y = y_top, yend = y_top - cap_h,
+           color = HEADER, linewidth = 0.4) +
+  annotate("segment", x = 2, xend = 2, y = y_top, yend = y_top - cap_h,
+           color = HEADER, linewidth = 0.4) +
+  annotate("text", x = 1.5, y = y_top + star_off,
+           label = sig_label, color = HEADER, size = 4) +
+  scale_x_discrete(expand = expansion(add = c(0.55, 0.85))) +
+  scale_y_continuous(limits = c(0, y_top + star_off * 3),
+                     expand = expansion(mult = c(0, 0)),
+                     breaks = scales::pretty_breaks(6)) +
+  labs(x = "Sexo", y = sprintf("%s (h)", PRIMARY_LBL))
+```
+
+El contraste crudo no detecta diferencias entre mujeres y hombres (Mann–Whitney U = `r formatC(mw$statistic, format='d')`, p = `r fmt_p(mw$p.value)`); Cliff's δ = `r sprintf('%+.3f', cd_val)` (`r interpreta_cliff(cd_val)`, IC95% [`r sprintf('%+.3f', cd_lo)`, `r sprintf('%+.3f', cd_hi)`]), con un IC que cruza el cero. Las medianas son prácticamente idénticas (`r sprintf('%.2f', med_muj)` h vs `r sprintf('%.2f', med_hom)` h, `r sprintf('%.0f', abs(med_muj - med_hom)*60)` min de diferencia). El ajuste por edad mediante rank-ANCOVA de Quade [14] no cambia el resultado (p = `r fmt_p(mw_adj$p.value)`, δ = `r sprintf('%+.3f', cd_adj_val)` IC95% [`r sprintf('%+.3f', cd_adj_lo)`, `r sprintf('%+.3f', cd_adj_hi)`]). El sexo se incluirá en los análisis multivariables posteriores solo por convención de ajuste demográfico.
+
+# 6 · SJL y cronotipo
+
+Los vespertinos tienen el MSF desplazado hacia la noche y, restringidos por horarios laborales/escolares matutinos, acumulan más desfase que los matutinos. La cohorte se distribuye en cinco categorías (vespertino extremo, vespertino, indefinido, matutino, matutino extremo). Mismo planteamiento que §4.2: Kruskal-Wallis + ε², Dunn-Holm y Cliff δ por par.
+
+```{r sjl_cronotipo_stats}
+sub_cronotipo <- val_sanos |>
+  rename(crono = all_of(CRONO_COL)) |>
+  mutate(crono = factor(crono, levels = CRONO_ORDER),
+         sjl = .data[[PRIMARY]])
+
+short_labs <- function(x) stringr::str_to_sentence(relabel_nivel(x, CRONO_COL))
+
+# Omnibus: Kruskal-Wallis + ε²
+kw <- sub_cronotipo |> kruskal_test(sjl ~ crono)
+eps2 <- effectsize::rank_epsilon_squared(sjl ~ crono, data = sub_cronotipo)
+eps2_val <- eps2$rank_epsilon_squared
+
+# Post-hoc Dunn-Holm enriquecido con Cliff δ por par
+dunn <- sub_cronotipo |>
+  dunn_test(sjl ~ crono, p.adjust.method = "holm") |>
+  add_cliff_to_dunn(sub_cronotipo, "sjl", "crono")
+
+render_dunn_table(
+  dunn,
+  caption = "Tabla 10 · Post-hoc Dunn-Holm de SJL entre cronotipos.",
+  label_fn = short_labs
+)
+```
+
+> **Códigos de significancia:** `****` p < 0.0001 · `***` p < 0.001 · `**` p < 0.01 · `*` p < 0.05 · `ns` = no significativo (p ≥ 0.05). **Interpretación de Cliff's δ**: $|\delta| < 0.147$ negligible · $< 0.33$ pequeño · $< 0.474$ mediano · $\geq 0.474$ grande. **Dirección del signo:** δ > 0 ⇔ el grupo de la izquierda del par (el más vespertino) tiene mayor SJL; δ < 0 ⇔ lo tiene el de la derecha (el más matutino).
+
+```{r sjl_cronotipo_plot, fig.width = 11, fig.height = 6.8, fig.cap = "Figura 9 · SJL por cronotipo. Línea horizontal roja discontinua: mediana global de referencia. Corchetes inferiores: comparaciones entre cronotipos adyacentes (vespertino extremo → matutino extremo). Corchetes superiores: vespertino vs matutino y los dos extremos entre sí. Post-hoc Dunn-Holm; asteriscos según códigos de la nota inmediatamente superior."}
+med_crono <- sub_cronotipo |>
+  group_by(crono) |>
+  summarise(med = median(sjl), .groups = "drop")
+
+
+adj_pairs <- build_adj_pairs(CRONO_ORDER, dunn)
+
+x_inset <- 0.12
+cross_pairs <- tibble(
+  group1 = c("Cronotipo vespertino", "Cronotipo vespertino extremo"),
+  group2 = c("Cronotipo matutino", "Cronotipo matutino extremo")
+) |>
+  mutate(
+    pos1 = match(group1, CRONO_ORDER),
+    pos2 = match(group2, CRONO_ORDER),
+    x_lo = pos1 + x_inset,
+    x_hi = pos2 - x_inset,
+    x_mid = (pos1 + pos2) / 2
+  ) |>
+  left_join(dunn |> dplyr::select(group1, group2, p.adj),
+            by = c("group1", "group2")) |>
+  mutate(stars = sig_stars(p.adj))
+
+y_max <- max(sub_cronotipo$sjl)
+y_lim <- y_max * 1.34
+
+ggplot(sub_cronotipo, aes(x = crono, y = sjl, color = crono, fill = crono)) +
+  geom_jitter(width = 0.15, alpha = 0.18, size = 0.5, show.legend = FALSE) +
+  stat_boxplot(geom = "errorbar", width = 0.22, linewidth = 0.5,
+               show.legend = FALSE) +
+  geom_boxplot(alpha = 0.30, outlier.shape = NA,
+               width = 0.55, fatten = 2.2, linewidth = 0.55,
+               show.legend = FALSE) +
+  stat_summary(fun = mean, geom = "point", shape = 23,
+               fill = "white", color = HEADER, size = 2.8, stroke = 0.6) +
+  scale_color_manual(values = PAL_CRONO) +
+  scale_fill_manual(values = PAL_CRONO) +
+  geom_label(data = med_crono,
+             aes(x = crono, y = med, label = sprintf("%.2f h", med)),
+             color = HEADER, fontface = "bold", size = 4,
+             fill = "white", label.size = 0,
+             label.padding = unit(0.18, "lines"),
+             inherit.aes = FALSE) +
+  geom_hline(yintercept = MED_SJL_SANOS, color = ACCENT,
+             linetype = "dashed", linewidth = 0.4) +
+  add_corchetes_signif(adj_pairs, y_max * 1.04, y_max) +
+  add_corchetes_signif(cross_pairs[1, ], y_max * 1.14, y_max) +
+  add_corchetes_signif(cross_pairs[2, ], y_max * 1.24, y_max) +
+  scale_y_continuous(limits = c(0, y_lim),
+                     expand = expansion(mult = c(0, 0)),
+                     breaks = scales::pretty_breaks(6)) +
+  scale_x_discrete(labels = short_labs,
+                   expand = expansion(add = c(0.45, 0.55))) +
+  labs(x = NULL, y = sprintf("%s (h)", PRIMARY_LBL))
+```
+
+```{r sjl_crono_resumen, include = FALSE}
+cd_vext_v <- dunn_pair(dunn, "Cronotipo vespertino extremo", "Cronotipo vespertino")
+cd_vext_n <- dunn_pair(dunn, "Cronotipo vespertino extremo", "Cronotipo indefinido")
+cd_v_n <- dunn_pair(dunn, "Cronotipo vespertino", "Cronotipo indefinido")
+cd_m_mext <- dunn_pair(dunn, "Cronotipo matutino", "Cronotipo matutino extremo")
+cd_v_m <- dunn_pair(dunn, "Cronotipo vespertino", "Cronotipo matutino")
+cd_n_m <- dunn_pair(dunn, "Cronotipo indefinido", "Cronotipo matutino")
+cd_vext_m <- dunn_pair(dunn, "Cronotipo vespertino extremo", "Cronotipo matutino")
+cd_vext_mext <- dunn_pair(dunn, "Cronotipo vespertino extremo", "Cronotipo matutino extremo")
+
+med_vext <- dunn_group_median(med_crono, "crono", "Cronotipo vespertino extremo")
+med_v <- dunn_group_median(med_crono, "crono", "Cronotipo vespertino")
+n_mext <- sum(sub_cronotipo$crono == "Cronotipo matutino extremo")
+```
+
+El omnibus de Kruskal-Wallis rechaza la igualdad de SJL entre cronotipos (H = `r sprintf('%.2f', kw$statistic)`, p = `r fmt_p(kw$p)`, ε² = `r sprintf('%.3f', eps2_val)`). En la Figura 9, dentro del bloque vespertino + indefinido los tres pares posibles tienen Cliff δ negligible: vespertino extremo vs vespertino (`r sprintf('%+.3f', cd_vext_v$cliff)`), vespertino extremo vs indefinido (`r sprintf('%+.3f', cd_vext_n$cliff)`) y vespertino vs indefinido (`r sprintf('%+.3f', cd_v_n$cliff)`); ninguno sustantivamente relevante. Dentro del bloque matutino + matutino extremo ocurre lo mismo: Cliff δ = `r sprintf('%+.3f', cd_m_mext$cliff)`, `r fmt_sig(cd_m_mext$p)`. Las comparaciones que cruzan los bloques son pequeñas pero genuinamente significativas: vespertino vs matutino arroja Cliff δ = `r sprintf('%+.3f', cd_v_m$cliff)` (`r interpreta_cliff(cd_v_m$cliff)`, p `r fmt_sig(cd_v_m$p)`), indefinido vs matutino = `r sprintf('%+.3f', cd_n_m$cliff)` (`r interpreta_cliff(cd_n_m$cliff)`, p `r fmt_sig(cd_n_m$p)`), vespertino extremo vs matutino = `r sprintf('%+.3f', cd_vext_m$cliff)` (`r interpreta_cliff(cd_vext_m$cliff)`, p `r fmt_sig(cd_vext_m$p)`). Los dos corchetes cruzados sintetizan este resultado: vespertino vs matutino con magnitud sustantiva y muy significativo (p `r fmt_sig(cd_v_m$p)`), frente a vespertino extremo vs matutino extremo con Cliff δ = `r sprintf('%+.3f', cd_vext_mext$cliff)` pero solo p `r fmt_sig(cd_vext_mext$p)`, diferencia atribuible a la pérdida de potencia que impone el n = `r n_mext` del grupo matutino extremo, no a una diferencia subyacente menor.
+
+Llama la atención que vespertino "regular", no vespertino extremo, tenga la mediana más alta (`r sprintf('%.2f', med_v)` vs `r sprintf('%.2f', med_vext)` h). Si la intensidad del cronotipo determinara linealmente el SJL, lo esperable sería que vespertino extremo lo superase; la observación contraria sugiere una mayor adaptación a un estilo de vida nocturno, que reduciría su SJL pese a su biología desplazada. Sin información ocupacional queda como hipótesis. Visualmente, la mediana global (línea roja discontinua, ≈ `r sprintf('%.2f', MED_SJL_SANOS)` h) actúa como umbral aproximado: vespertino queda claramente por encima, indefinido y vespertino extremo se sitúan en torno a ella, y matutino y matutino extremo caen claramente por debajo.
+
+```{r export_fig_factores, include = FALSE}
+box_memoria <- function(df, xvar, med_df, pal, xlab, brackets = NULL,
+                        y_lim = NULL, xlabels = waiver(), angle_x = 0) {
+  ggplot(df, aes(x = .data[[xvar]], y = sjl,
+                 color = .data[[xvar]], fill = .data[[xvar]])) +
+    geom_jitter(width = 0.15, alpha = 0.16, size = 0.35, show.legend = FALSE) +
+    stat_boxplot(geom = "errorbar", width = 0.22, linewidth = 0.4,
+                 show.legend = FALSE) +
+    geom_boxplot(alpha = 0.30, outlier.shape = NA, width = 0.55, fatten = 2,
+                 linewidth = 0.45, show.legend = FALSE) +
+    stat_summary(fun = mean, geom = "point", shape = 23, fill = "white",
+                 color = HEADER, size = 1.9, stroke = 0.5) +
+    scale_color_manual(values = pal) +
+    scale_fill_manual(values = pal) +
+    geom_label(data = med_df,
+               aes(x = .data[[xvar]], y = med, label = sprintf("%.2f", med)),
+               color = HEADER, fontface = "bold", size = 2.5, fill = "white",
+               label.size = 0, label.padding = unit(0.12, "lines"),
+               inherit.aes = FALSE) +
+    geom_hline(yintercept = MED_SJL_SANOS, color = ACCENT, linetype = "dashed",
+               linewidth = 0.4) +
+    brackets +
+    scale_x_discrete(labels = xlabels, expand = expansion(add = c(0.5, 0.5))) +
+    scale_y_continuous(breaks = scales::pretty_breaks(5),
+                       expand = expansion(mult = c(0, 0.02))) +
+    coord_cartesian(ylim = c(0, y_lim)) +
+    labs(x = xlab, y = sprintf("%s (h)", PRIMARY_LBL)) +
+    theme_tfm(11) +
+    theme(legend.position = "none",
+          axis.text.x = element_text(
+            angle = angle_x, color = "grey20", size = 9,
+            hjust = if (angle_x > 0) 1 else 0.5,
+            vjust = if (angle_x > 0) 1 else 0.5))
+}
+
+YREF <- 5
+YTOP <- 6
+
+dunn_e <- sub_grupo_edad |> dunn_test(sjl ~ grupo_edad, p.adjust.method = "holm")
+adj_e <- build_adj_pairs(EDAD_LABELS, dunn_e)
+brk_edad <- add_corchetes_signif(adj_e, 4.0, YREF, star_size = 3,
+                                 linewidth = 0.35)
+
+dunn_c <- sub_cronotipo |> dunn_test(sjl ~ crono, p.adjust.method = "holm")
+adj_c <- build_adj_pairs(CRONO_ORDER, dunn_c)
+x_inset <- 0.12
+cross_c <- tibble(
+  group1 = c("Cronotipo vespertino", "Cronotipo vespertino extremo"),
+  group2 = c("Cronotipo matutino", "Cronotipo matutino extremo")
+) |>
+  mutate(pos1 = match(group1, CRONO_ORDER), pos2 = match(group2, CRONO_ORDER),
+         x_lo = pos1 + x_inset, x_hi = pos2 - x_inset,
+         x_mid = (pos1 + pos2) / 2) |>
+  left_join(dunn_c |> dplyr::select(group1, group2, p.adj),
+            by = c("group1", "group2")) |>
+  mutate(stars = sig_stars(p.adj))
+brk_crono <- c(
+  add_corchetes_signif(adj_c, 3.9, YREF, star_size = 3, linewidth = 0.35),
+  add_corchetes_signif(cross_c[1, ], 4.7, YREF, star_size = 3, linewidth = 0.35),
+  add_corchetes_signif(cross_c[2, ], 5.5, YREF, star_size = 3, linewidth = 0.35)
+)
+
+b_edad <- box_memoria(sub_grupo_edad, "grupo_edad", med_edad_grupo, PAL_EDAD,
+                      "Grupo de edad", brackets = brk_edad, y_lim = YTOP)
+b_crono <- box_memoria(sub_cronotipo, "crono", med_crono, PAL_CRONO,
+                       "Cronotipo", brackets = brk_crono, y_lim = YTOP,
+                       xlabels = short_labs, angle_x = 30)
+
+e_fit <- lm(sjl ~ edad, data = sub_edad)
+e_beta <- coef(e_fit)[["edad"]]
+e_rho <- suppressWarnings(
+  cor.test(sub_edad$edad, sub_edad$sjl, method = "spearman"))$estimate
+annot_edad <- sprintf("β = %+.2f min/año\nρ = %+.2f", e_beta * 60, e_rho)
+a_edad <- ggplot(sub_edad, aes(x = edad, y = sjl)) +
+  geom_point(alpha = 0.20, size = 0.5, color = COLOR_SJL) +
+  geom_line(data = med_edad_bin, aes(x = edad, y = sjl_med),
+            color = HEADER, linetype = "dotted", linewidth = 0.5) +
+  geom_point(data = med_edad_bin, aes(x = edad, y = sjl_med),
+             color = HEADER, size = 1.3) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
+              color = ACCENT, fill = ACCENT, alpha = 0.18, linewidth = 0.9) +
+  annotate("label", x = max(sub_edad$edad) - 0.5, y = max(sub_edad$sjl),
+           label = annot_edad, hjust = 1, vjust = 1, size = 2.9, color = HEADER,
+           fill = "white", alpha = 0.92, label.size = 0.25,
+           label.padding = unit(0.25, "lines")) +
+  labs(x = "Edad (años)", y = sprintf("%s (h)", PRIMARY_LBL)) +
+  expand_limits(y = 0) +
+  theme_tfm(11)
+
+fig_edad <- (a_edad | b_edad) +
+  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
+    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 12)))
+dir.create("outputs/memoria/figuras", recursive = TRUE, showWarnings = FALSE)
+ggsave("outputs/memoria/figuras/fig_sjl_edad.png", fig_edad,
+       width = 10.5, height = 5.1, dpi = 200, device = ragg::agg_png)
+```
+
+# 7 · SJL e IMC
+
+La relación SJL-IMC es de las más estudiadas y debatidas. El meta-análisis más reciente (43 estudios, n ≈ 231.648) estima una asociación positiva global significativa (r = 0,12, p < 0,001) pero con heterogeneidad muy alta (I² ≈ 95 %) atribuida a la diversidad metodológica: definición del SJL (MCTQ vs actigrafía, variante clásica vs corregida por deuda de sueño vs Jankowski, absoluto vs con signo), rango etario y estrategia de ajuste [15]. Algunos trabajos reportan asociación positiva moderada [2, 9, 5]; la elevada heterogeneidad del meta-análisis [15] refleja precisamente esta disparidad entre estudios individuales.
+
+El análisis se restringe a sanos adultos (≥ 18 años) por los umbrales OMS del IMC. Los adolescentes quedan excluidos porque necesitarían percentiles específicos para la clasificación de su IMC. Tres bloques abordan la asociación SJL-IMC desde perspectivas complementarias: relación continua (regresión lineal + Spearman, con verificación de robustez ante confusión por edad y sexo mediante Spearman parcial), categorización OMS del IMC (Kruskal-Wallis + ε²) y comparación dicotómica del IMC entre sujetos con SJL clínicamente relevante (≥ 2 h) y el resto (Mann-Whitney + Cliff's δ con IC 95 %).
+
+## 7.1 Relación continua
+
+```{r sjl_imc_continuo, fig.width = 10, fig.height = 5.5, fig.cap = "Figura 10 · SJL frente a IMC continuo en sanos adultos (≥ 18 años). Puntos: SJL individual. Línea roja con banda: regresión lineal con IC 95 %. Línea oscura con puntos: mediana del SJL por franjas de 2 kg/m² (franjas con n ≥ 20 sujetos). Anotación interna: β, t, p, R² de la regresión lineal y ρ de Spearman."}
+sub_imc_cont <- val_sanos |>
+  filter(.data[[EDAD_COL]] >= 18) |>
+  mutate(sjl = .data[[PRIMARY]])
+
+# Regresión lineal SJL ~ IMC: β en horas por kg/m², con t, p, R²
+lin_fit <- lm(sjl ~ imc, data = sub_imc_cont)
+lin_summ <- summary(lin_fit)
+beta_lin <- coef(lin_fit)[["imc"]]
+t_lin <- lin_summ$coefficients["imc", "t value"]
+p_lin <- lin_summ$coefficients["imc", "Pr(>|t|)"]
+r2_lin <- lin_summ$r.squared
+
+# Spearman IMC ~ SJL (complemento no paramétrico)
+rho_sp <- cor.test(sub_imc_cont$imc, sub_imc_cont$sjl, method = "spearman")
+
+# Mediana del SJL por franjas de 2 kg/m², filtrando franjas con n < 20
+imc_floor <- floor(min(sub_imc_cont$imc) / 2) * 2
+imc_ceil <- ceiling(max(sub_imc_cont$imc) / 2) * 2
+bins2 <- seq(imc_floor, imc_ceil, by = 2)
+med_imc_bin <- sub_imc_cont |>
+  mutate(bin = cut(imc, breaks = bins2, include.lowest = TRUE, right = FALSE)) |>
+  group_by(bin) |>
+  summarise(imc = mean(imc), sjl_med = median(sjl),
+            n_bin = dplyr::n(), .groups = "drop") |>
+  filter(n_bin >= 20)
+
+annot <- sprintf(
+  "Regresión lineal: β = %+.4f h por kg/m² · t = %.2f · p = %s · R² = %.4f\nSpearman ρ = %+.3f · p = %s",
+  beta_lin, t_lin, fmt_p(p_lin), r2_lin,
+  rho_sp$estimate, fmt_p(rho_sp$p.value)
+)
+
+x_lab <- max(sub_imc_cont$imc) - 0.5
+y_lab <- max(sub_imc_cont$sjl)
+
+ggplot(sub_imc_cont, aes(x = imc, y = sjl)) +
+  geom_point(alpha = 0.25, size = 0.8, color = COLOR_SJL) +
+  geom_line(data = med_imc_bin, aes(x = imc, y = sjl_med),
+            color = HEADER, linetype = "dotted", linewidth = 0.55) +
+  geom_point(data = med_imc_bin, aes(x = imc, y = sjl_med),
+             color = HEADER, size = 1.6) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE,
+              color = ACCENT, fill = ACCENT, alpha = 0.18, linewidth = 1) +
+  annotate("label", x = x_lab, y = y_lab, label = annot,
+           hjust = 1, vjust = 1, size = 3.8, color = HEADER,
+           fill = "white", alpha = 0.92, label.size = 0.3,
+           label.padding = unit(0.30, "lines")) +
+  labs(x = "IMC (kg/m²)", y = sprintf("%s (h)", PRIMARY_LBL)) +
+  expand_limits(y = 0)
+```
+
+La regresión lineal `SJL ~ IMC` **no detecta asociación**: β = `r sprintf('%+.4f', beta_lin)` h por kg/m² con p = `r fmt_p(p_lin)` (t = `r sprintf('%.2f', t_lin)`), no significativo. El R² = `r sprintf('%.4f', r2_lin)` indica que el IMC explica menos del `r sprintf('%.1f', r2_lin*100)` % de la variabilidad del SJL, es decir, prácticamente nada. En la escala práctica, la pendiente equivale a apenas `r sprintf('%.2f', abs(beta_lin)*60*5)` minutos de SJL por cada 5 puntos de IMC, clínicamente nulo. El Spearman ρ = `r sprintf('%+.3f', rho_sp$estimate)` (p = `r fmt_p(rho_sp$p.value)`, n = `r nrow(sub_imc_cont)`) cruza formalmente α = 0.05 solo por el tamaño muestral (con n ≈ `r nrow(sub_imc_cont)` cualquier asociación monótona mínima alcanza significancia), pero la magnitud sigue siendo negligible. La línea de medianas por franjas de IMC refuerza la conclusión visualmente: se mantiene plana en torno a 0.7-0.9 h a lo largo de todo el rango. No hay asociación marginal SJL-IMC detectable en esta cohorte.
+
+```{r sjl_imc_parcial}
+# Spearman parcial SJL-IMC ajustado por edad y sexo: descarta que la
+# nulidad marginal se deba a confusión por estos factores.
+ps_imc <- partial_spearman(sub_imc_cont, "imc", "sjl", c(EDAD_NUM, "sexo"))
+```
+
+El resultado se mantiene tras controlar por edad y sexo: ρ parcial de Spearman = `r sprintf('%+.3f', ps_imc$rho_partial)` (p = `r fmt_p(ps_imc$p)`, n = `r ps_imc$n`), prácticamente idéntico al ρ marginal. La ausencia de asociación no se explica por confusión demográfica.
+
+## 7.2 Categorización OMS
+
+El IMC se discretiza con los umbrales OMS (Bajo peso < 18.5, Normopeso 18.5-24.99, Sobrepeso 25-29.99, Obesidad ≥ 30 kg/m²) y se contrasta con Kruskal-Wallis + ε².
+
+```{r sjl_imc_grupo_stats}
+sub_imc_cat <- val_sanos |>
+  filter(.data[[EDAD_COL]] >= 18) |>
+  mutate(imc_cat = cut(imc, breaks = IMC_BINS, labels = IMC_LABS,
+                       include.lowest = TRUE, right = FALSE),
+         sjl = .data[[PRIMARY]])
+
+# Comprobación del n por categoría
+n_imc <- sub_imc_cat |> count(imc_cat) |> tibble::deframe()
+
+# Omnibus: Kruskal-Wallis + ε²
+kw <- sub_imc_cat |> kruskal_test(sjl ~ imc_cat)
+eps2 <- effectsize::rank_epsilon_squared(sjl ~ imc_cat, data = sub_imc_cat)
+eps2_val <- eps2$rank_epsilon_squared
+```
+
+```{r sjl_imc_grupo_plot, fig.width = 11, fig.height = 5.5, fig.cap = "Figura 11 · SJL por categoría OMS de IMC en sanos adultos (≥ 18 años). Línea horizontal roja discontinua: mediana del SJL en esta submuestra de adultos."}
+med_imc_adultos <- median(sub_imc_cat$sjl)
+
+med_imc_cat <- sub_imc_cat |>
+  group_by(imc_cat) |>
+  summarise(med = median(sjl), .groups = "drop")
+
+y_max <- max(sub_imc_cat$sjl)
+y_lim <- y_max * 1.08
+
+ggplot(sub_imc_cat, aes(x = imc_cat, y = sjl, color = imc_cat, fill = imc_cat)) +
+  geom_jitter(width = 0.15, alpha = 0.18, size = 0.5, show.legend = FALSE) +
+  stat_boxplot(geom = "errorbar", width = 0.22, linewidth = 0.5,
+               show.legend = FALSE) +
+  geom_boxplot(alpha = 0.30, outlier.shape = NA,
+               width = 0.55, fatten = 2.2, linewidth = 0.55,
+               show.legend = FALSE) +
+  stat_summary(fun = mean, geom = "point", shape = 23,
+               fill = "white", color = HEADER, size = 2.8, stroke = 0.6) +
+  scale_color_manual(values = PAL_IMC) +
+  scale_fill_manual(values = PAL_IMC) +
+  geom_label(data = med_imc_cat,
+             aes(x = imc_cat, y = med, label = sprintf("%.2f h", med)),
+             color = HEADER, fontface = "bold", size = 4,
+             fill = "white", label.size = 0,
+             label.padding = unit(0.18, "lines"),
+             inherit.aes = FALSE) +
+  geom_hline(yintercept = med_imc_adultos, color = ACCENT,
+             linetype = "dashed", linewidth = 0.4) +
+  scale_y_continuous(limits = c(0, y_lim),
+                     expand = expansion(mult = c(0, 0)),
+                     breaks = scales::pretty_breaks(6)) +
+  scale_x_discrete(expand = expansion(add = c(0.45, 0.55))) +
+  labs(x = "Categoría de IMC (OMS)", y = sprintf("%s (h)", PRIMARY_LBL))
+```
+
+El omnibus no detecta diferencias entre las cuatro categorías OMS (H = `r sprintf('%.2f', kw$statistic)`, p = `r fmt_p(kw$p)`, ε² = `r sprintf('%.3f', eps2_val)`). Las medianas son prácticamente coincidentes: `r sprintf('%.2f', med_imc_cat$med[med_imc_cat$imc_cat=="Bajo peso"])` h en Bajo peso (n = `r unname(n_imc["Bajo peso"])`), `r sprintf('%.2f', med_imc_cat$med[med_imc_cat$imc_cat=="Normopeso"])` h (n = `r unname(n_imc["Normopeso"])`), `r sprintf('%.2f', med_imc_cat$med[med_imc_cat$imc_cat=="Sobrepeso"])` h en Sobrepeso (n = `r unname(n_imc["Sobrepeso"])`) y `r sprintf('%.2f', med_imc_cat$med[med_imc_cat$imc_cat=="Obesidad"])` h en Obesidad (n = `r unname(n_imc["Obesidad"])`). Sin omnibus significativo no procede análisis post-hoc. Continuo y categorizado coinciden: no hay asociación marginal SJL-IMC.
+
+## 7.3 Diferencias estratificando por SJL ≥ 2 h
+
+Como cierre, se enfoca el contraste en los sujetos con SJL clínicamente relevante: se estratifica la submuestra por el umbral 2 h y se compara el IMC entre grupos con Mann-Whitney y Cliff's δ con IC 95 %.
+
+```{r sjl_imc_dicotomico_stats}
+sub_imc_dico <- val_sanos |>
+  filter(.data[[EDAD_COL]] >= 18) |>
+  mutate(sjl_alto = factor(.data[[PRIMARY]] >= 2,
+                            levels = c(FALSE, TRUE),
+                            labels = c("SJL < 2 h", "SJL ≥ 2 h")))
+
+n_bajo <- sum(sub_imc_dico$sjl_alto == "SJL < 2 h")
+n_alto <- sum(sub_imc_dico$sjl_alto == "SJL ≥ 2 h")
+imc_bajo <- sub_imc_dico$imc[sub_imc_dico$sjl_alto == "SJL < 2 h"]
+imc_alto <- sub_imc_dico$imc[sub_imc_dico$sjl_alto == "SJL ≥ 2 h"]
+med_bajo <- median(imc_bajo)
+med_alto <- median(imc_alto)
+
+# Mann-Whitney + Cliff's δ con IC 95 % asintótico.
+# Orden (imc_alto, imc_bajo): δ > 0 si SJL ≥ 2 h tiene mayor IMC.
+mw_sjl2 <- wilcox.test(imc_alto, imc_bajo)
+cd_sjl2 <- effectsize::cliffs_delta(imc_alto, imc_bajo)
+cd_sjl2_v <- pluck_cliff(cd_sjl2)
+cd_sjl2_lo <- as.numeric(cd_sjl2$CI_low)
+cd_sjl2_hi <- as.numeric(cd_sjl2$CI_high)
+```
+
+```{r sjl_imc_dicotomico_plot, fig.width = 7, fig.height = 4.8, fig.cap = sprintf("Figura 12 · IMC en sanos adultos (≥ 18 años) estratificado por SJL (< 2 h: n = %d; ≥ 2 h: n = %d). Caja: IQR. Bigotes: 1.5·IQR. Línea horizontal gruesa: mediana. Diamante: media. Puntos: sujetos individuales.", n_bajo, n_alto)}
+med_df_dico <- sub_imc_dico |>
+  group_by(sjl_alto) |>
+  summarise(med = median(imc), .groups = "drop")
+
+ggplot(sub_imc_dico, aes(x = sjl_alto, y = imc,
+                          color = sjl_alto, fill = sjl_alto)) +
+  geom_jitter(width = 0.15, alpha = 0.18, size = 0.5, show.legend = FALSE) +
+  stat_boxplot(geom = "errorbar", width = 0.22, linewidth = 0.5,
+               show.legend = FALSE) +
+  geom_boxplot(alpha = 0.30, outlier.shape = NA,
+               width = 0.45, fatten = 2.2, linewidth = 0.55,
+               show.legend = FALSE) +
+  stat_summary(fun = mean, geom = "point", shape = 23,
+               fill = "white", color = HEADER, size = 2.8, stroke = 0.6) +
+  scale_color_manual(values = c("SJL < 2 h" = COLOR_SJL, "SJL ≥ 2 h" = ACCENT)) +
+  scale_fill_manual(values = c("SJL < 2 h" = COLOR_SJL, "SJL ≥ 2 h" = ACCENT)) +
+  geom_label(data = med_df_dico,
+             aes(x = sjl_alto, y = med, label = sprintf("%.2f kg/m²", med)),
+             color = HEADER, fontface = "bold", size = 4,
+             fill = "white", label.size = 0,
+             label.padding = unit(0.18, "lines"),
+             inherit.aes = FALSE) +
+  labs(x = "Grupo de SJL", y = "IMC (kg/m²)")
+```
+
+La estratificación por el umbral clínico de 2 h confirma la independencia: la mediana de IMC en el grupo SJL ≥ 2 h (`r sprintf('%.2f', med_alto)` kg/m², n = `r n_alto`) es prácticamente idéntica a la del grupo SJL < 2 h (`r sprintf('%.2f', med_bajo)` kg/m², n = `r n_bajo`). El Mann-Whitney no rechaza la igualdad (p = `r fmt_p(mw_sjl2$p.value)`) y el Cliff's δ = `r sprintf('%+.3f', cd_sjl2_v)` (IC 95 % [`r sprintf('%+.3f', cd_sjl2_lo)`, `r sprintf('%+.3f', cd_sjl2_hi)`]) es **`r interpreta_cliff(cd_sjl2_v)`** con un IC que cruza el cero, descartando incluso un efecto pequeño en cualquiera de las dos direcciones.
+
+```{r sjl_imc_dicotomico_ajustado}
+# Sensibilidad: residualizar el IMC por edad y sexo (rank-OLS) y rerun
+# Mann-Whitney + Cliff's δ entre los dos grupos de SJL sobre los residuos.
+# Confirma que la independencia no se debe a confusión demográfica.
+sub_imc_dico_aj <- sub_imc_dico |>
+  mutate(edad = .data[[EDAD_NUM]],
+         sexo_f = factor(sexo))
+imc_resid <- residuals(lm(rank(imc) ~ edad + sexo_f, data = sub_imc_dico_aj))
+imc_resid_alto <- imc_resid[sub_imc_dico_aj$sjl_alto == "SJL ≥ 2 h"]
+imc_resid_bajo <- imc_resid[sub_imc_dico_aj$sjl_alto == "SJL < 2 h"]
+mw_sjl2_adj <- wilcox.test(imc_resid_alto, imc_resid_bajo)
+cd_sjl2_adj <- effectsize::cliffs_delta(imc_resid_alto, imc_resid_bajo)
+cd_sjl2_adj_v <- pluck_cliff(cd_sjl2_adj)
+```
+
+Como cierre defensivo, al residualizar el IMC por edad y sexo (rank-OLS) y repetir el contraste sobre los residuos, el resultado se mantiene: Cliff's δ ajustado = `r sprintf('%+.3f', cd_sjl2_adj_v)`, p = `r fmt_p(mw_sjl2_adj$p.value)`. La conclusión no es atribuible a confusión demográfica. Las tres perspectivas (continua, OMS y dicotómica por umbral clínico) convergen en la misma conclusión: SJL e IMC son independientes en esta cohorte de sanos adultos.
+
+# 8 · SJL y variables circadianas-no paramétricas
+
+Correlaciones de **Spearman** entre el SJL y las variables circadianas/actigráficas disponibles en el CRD. Cálculo sobre `val_sanos` con tres estrategias en paralelo:
+
+- **Spearman crudo**: asociación bivariada bruta.
+- **Spearman parcial ajustado por edad y sexo** (residualización OLS sobre rangos), **modelo principal**: aísla la asociación específica descontando el efecto demográfico que edad y sexo pudieran tener sobre ambas variables.
+- **Spearman parcial ajustado por edad, sexo y cronotipo** (**análisis de sensibilidad**): añade el cronotipo colapsado a 3 niveles (matutino / indefinido / vespertino, coherente con §7), codificado como K-1 variables indicadoras en la residualización. Como se discute en §0, cronotipo y SJL están entrelazados por construcción (el cronotipo medido vía MSF entra en el cálculo del SJL); por eso no se incluye en el modelo primario y se reserva para evaluar la robustez de la señal: si la asociación de una variable circadiana con el SJL sobrevive al ajuste por cronotipo, aporta información más allá del cronotipo subyacente, apoyado por distintas referencias metodológicas [4, 5].
+
+Las tres con corrección de **Holm-Bonferroni** sobre la batería completa. Se reportan: (i) **tabla maestra** con los tres `ρ` (ordenada por |ρ parcial edad + sexo|, el modelo principal); (ii) **forest plot** con los tres estimadores superpuestos sobre el mismo eje, cuando los tres puntos coinciden para una variable, la asociación es robusta frente a edad, sexo y cronotipo; si divergen, la separación cuantifica el confounding por cada ajuste; (iii) **matriz de correlación** con las 15 variables de mayor |ρ parcial edad + sexo|.
+
+> **Nota sobre nomenclatura de las variables actigráficas.** Los nombres siguen un patrón `prefijo_sufijo`. Los **prefijos** identifican el bloque de origen: `sleep_*` (eventos de sueño), `tap_*` (tap test), `tiempomov_*` (tiempo en movimiento), `intensidad_*` (intensidad de actividad), `light_*` (exposición a luz). Los **sufijos** identifican la métrica: `_is` = interdaily stability (estabilidad inter-día), `_cfi` = Circadian Function Index, `_ra` = relative amplitude, `_rf` = restfulness (calidad del descanso), `_chs` = índice de salud circadiana, `_valorl5` / `_valorl10` = intensidad media en las 5 h menos activas / 10 h más activas del día, `_horal5decimal` / `_horal10decimal` = hora central decimal de esos periodos.
+
+## 8.1 Detección de candidatas
+
+El conjunto de variables circadianas/actigráficas se toma del CSV curado para machine learning (`df_cohorte_ml.csv`, generado en la sección 9 del notebook de preprocesamiento) en lugar de detectarlo con un regex sobre los nombres de columna. La lista del CSV ML es explícita y auditable, y ya excluye los identificadores administrativos, los metadatos del cómputo del SJL y las variables que entran en su cadena de cálculo (`MSW`, `MSF`, `MSF_sc`, `SOW`, `SOF`, `SEW`, `SEF`, `SDW`, `SDF`). Basta entonces con quitar las columnas que el CSV ML conserva como predictores legítimos pero que no son circadianas/actigráficas en el sentido estricto de esta sección:
+
+- **Factores de confusión demográficos** (`sexo`, `edad_estudio`): entran como controles en el Spearman parcial de la sección 8.2, no como variables a correlacionar.
+- **Antropometría** (`imc`, `peso_kg`, `altura_cm`): composición corporal, no circadiana.
+- **Cronotipo** (`cronotipo`): constructo aparte, ya analizado en la sección 6.
+- **Resúmenes globales de sueño** (`SO`, `SE`, `SD`): describen el horario habitual de sueño, no la organización circadiana subyacente.
+- **Patología** (`es_sano`, `n_patologias`, `pat_grupo_*`): salud, no circadiana.
+
+Los indicadores booleanos (`indicadorluz_*`, `indicadoractividad_*`, `indicadorsueno_*`) quedan fuera de manera automática por el doble filtro de tipo numérico y de número de valores únicos > 2 que cierra la cadena de selección. Mezclar ρ continuo-continuo con ρ continuo-binario en la misma tabla confunde la lectura. Los 12 indicadores se analizan aparte en la **sección 8.6** con el test natural para esa estructura (Mann-Whitney + Cliff's δ + corrección Holm).
+
+```{r circ_detect}
+# Cargar solo el encabezado del CSV ML para obtener la lista de columnas.
+cols_ml <- names(read_csv(file.path(PROCESSED, "df_cohorte_ml.csv"),
+                          n_max = 0, show_col_types = FALSE))
+
+# Columnas del CSV ML que no son circadianas/actigráficas en esta sección.
+NO_CIRCADIANAS <- c(
+  PRIMARY,
+  "sexo", "edad_estudio",
+  "imc", "peso_kg", "altura_cm",
+  "cronotipo",
+  "SO", "SE", "SD",
+  "es_sano", "n_patologias",
+  cols_ml[startsWith(cols_ml, "pat_grupo_")]
+)
+
+candidatas <- val_sanos |>
+  select(any_of(cols_ml)) |>
+  select(-any_of(NO_CIRCADIANAS)) |>
+  select(where(is.numeric)) |>
+  select(where(~ length(unique(na.omit(.x))) > 2 & sum(!is.na(.x)) >= 100)) |>
+  names()
+
+cat(sprintf("%d variables circadianas detectadas.\n", length(candidatas)))
+```
+
+Los duplicados exactos, artefactos del cruce de entidades del CRD, ya se eliminaron en la construcción del dataset con un umbral $|\rho| > 0{.}9999$. Las variables que quedan son distintas entre sí, aunque algunas covaríen con fuerza, de modo que se conservan todas; la colinealidad se documenta en la matriz de la sección 8.4 y no se poda en este punto.
+
+## 8.2 Spearman crudo y parcial
+
+```{r circ_correlations}
+# Spearman crudo + Holm
+sp_crudo <- map_dfr(candidatas, function(v) {
+  d <- val_sanos |> select(all_of(c(v, PRIMARY))) |> drop_na()
+  if (nrow(d) < 5) return(tibble(variable = v, n = nrow(d),
+                                  rho_crudo = NA, p_crudo = NA))
+  ct <- suppressWarnings(cor.test(d[[v]], d[[PRIMARY]], method = "spearman"))
+  tibble(variable = v, n = nrow(d),
+         rho_crudo = unname(ct$estimate),
+         p_crudo = ct$p.value)
+})
+sp_crudo$p_holm_crudo <- p.adjust(sp_crudo$p_crudo, method = "holm")
+
+# Cronotipo colapsado a 3 niveles (M/N/V) para el ajuste de sensibilidad:
+# las extremas tienen n bajo (~ 1.9 % y ~ 8.5 %, §1.2) y como indicadoras
+# introducen inestabilidad sin aportar señal. Coherente con §7.
+val_sanos_circ <- val_sanos |>
+  mutate(crono3 = factor(colapsar_cronotipo(.data[[CRONO_COL]]),
+                          levels = c("N", "M", "V")))
+
+# Spearman parcial: dos ajustes en paralelo.
+#   (a) Controles demográficos: edad + sexo (modelo principal por convención
+#       del documento, §0).
+#   (b) Controles demográficos + cronotipo: análisis de sensibilidad; aísla
+#       la asociación específica más allá de la que el cronotipo pueda mediar.
+# Holm se aplica por separado a cada batería 
+controles_basico <- c(EDAD_NUM, "sexo")
+controles_crono <- c(EDAD_NUM, "sexo", "crono3")
+
+sp_parcial <- map_dfr(candidatas, function(v) {
+  partial_spearman(val_sanos_circ, v, PRIMARY, controles_basico) |>
+    mutate(variable = v, .before = 1)
+})
+sp_parcial$p_holm_parcial <- p.adjust(sp_parcial$p, method = "holm")
+sp_parcial <- sp_parcial |> rename(rho_parcial = rho_partial,
+                                    p_parcial = p)
+
+sp_parcial_c <- map_dfr(candidatas, function(v) {
+  partial_spearman(val_sanos_circ, v, PRIMARY, controles_crono) |>
+    mutate(variable = v, .before = 1)
+})
+sp_parcial_c$p_holm_parcial_c <- p.adjust(sp_parcial_c$p, method = "holm")
+sp_parcial_c <- sp_parcial_c |> rename(rho_parcial_c = rho_partial,
+                                        p_parcial_c = p)
+
+# Merge: tabla maestra con crudo + dos parciales
+res_circ <- sp_crudo |>
+  left_join(sp_parcial |> select(variable, rho_parcial, p_parcial, p_holm_parcial),
+            by = "variable") |>
+  left_join(sp_parcial_c |> select(variable, rho_parcial_c, p_parcial_c, p_holm_parcial_c),
+            by = "variable") |>
+  arrange(desc(abs(rho_parcial)))
+
+# Mostrar top 25
+res_circ |>
+  slice_head(n = 25) |>
+  transmute(
+    Variable = acortar_var(variable),
+    `ρ crudo` = sprintf("%+.3f", rho_crudo),
+    `ρ parcial (edad + sexo)` = sprintf("%+.3f", rho_parcial),
+    `ρ parcial (+ cronotipo)` = sprintf("%+.3f", rho_parcial_c)
+  ) |>
+  estilo_kable(caption = sprintf(
+    "Tabla 11 · Correlación de Spearman entre %s y variables circadianas. Tres columnas: ρ crudo, ρ parcial (edad + sexo), modelo principal, ρ parcial (+ cronotipo), sensibilidad. Top 25 ordenadas por |ρ parcial (edad + sexo)|. Corrección Holm aplicada por separado a cada ajuste sobre la batería de %d variables.",
+    PRIMARY_LBL, length(candidatas)))
+
+# Persistencia
+write_csv(res_circ, file.path(PROCESSED, "sjl_correlaciones_circadianas_R.csv"))
+```
+
+```{r circ_resumen, include = FALSE}
+top25 <- res_circ |> slice_head(n = 25)
+rho_top_lo <- min(abs(top25$rho_parcial))
+rho_top_hi <- max(abs(top25$rho_parcial))
+top3_vars <- top25$variable[1:3]
+top3_rho_vals <- top25$rho_parcial[1:3]
+top3_rho_lo <- min(top3_rho_vals)
+top3_rho_hi <- max(top3_rho_vals)
+# Discrepancias entre ajustes en el top 25
+diff_crudo_p <- max(abs(top25$rho_crudo - top25$rho_parcial))
+diff_p_pc <- max(abs(top25$rho_parcial - top25$rho_parcial_c))
+n_san_circ <- max(top25$n, na.rm = TRUE)
+positivas <- top25 |> filter(rho_parcial > 0)
+n_pos <- nrow(positivas)
+rho_pos_lo <- if (n_pos > 0) min(positivas$rho_parcial) else NA
+rho_pos_hi <- if (n_pos > 0) max(positivas$rho_parcial) else NA
+```
+
+Las 25 variables del top abarcan un rango de |ρ parcial (edad + sexo)| entre `r sprintf('%.3f', rho_top_lo)` y `r sprintf('%.3f', rho_top_hi)`, lo que las sitúa entre asociaciones "pequeñas" y "moderadas" según los umbrales convencionales de Cohen para correlaciones (0.1 / 0.3 / 0.5). Tres patrones merecen atención:
+
+- **Las tres asociaciones más intensas pertenecen a familias métricas heterogéneas**: *`r top3_vars[1]`* (ρ = `r sprintf('%+.3f', top3_rho_vals[1])`), *`r top3_vars[2]`* (ρ = `r sprintf('%+.3f', top3_rho_vals[2])`) y *`r top3_vars[3]`* (ρ = `r sprintf('%+.3f', top3_rho_vals[3])`). Más allá de estas tres, el ranking combina dos familias bien diferenciadas: (i) **índices de regularidad y estabilidad rítmica** (sufijos `_is` (interdaily stability), `_cfi` (circadian function index), `_rf`, `_ra` (relative amplitude), `_chs`, además de la robustez circadiana), todos con signo negativo (mayor regularidad → menor SJL); y (ii) **valores y horas centrales de los periodos L5 y L10** (sufijos `_valorl5`, `_valorl10`, `_horal5decimal`, `_horal10decimal`) que cuantifican la posición temporal o la intensidad de las ventanas extremas del día, todos con signo positivo.
+- **El ajuste por edad y sexo apenas mueve los estimadores**: la diferencia máxima entre `ρ crudo` y `ρ parcial (edad + sexo)` en el top 25 es de `r sprintf('%.3f', diff_crudo_p)` puntos. Las asociaciones no se explican por confusión demográfica. Añadir el cronotipo como control adicional (columna de sensibilidad) tampoco las desplaza significativamente: la diferencia máxima entre `ρ parcial (edad + sexo)` y `ρ parcial (+ cronotipo)` es de `r sprintf('%.3f', diff_p_pc)` puntos, indicando que las variables circadianas/actigráficas miden algo que afecta al SJL más allá del cronotipo subyacente.
+- **Las variables con signo positivo** (`r n_pos` de las `r nrow(top25)` filas del top, ρ parcial entre `r sprintf('%+.3f', rho_pos_lo)` y `r sprintf('%+.3f', rho_pos_hi)`) **son todas indicadores de las ventanas L5 y L10**: cuanto más tarde se sitúan los periodos de menor o mayor actividad (`_horal5decimal`, `_horal10decimal`) o cuanto mayor es la intensidad registrada en estos periodos extremos (`_valorl5`, `_valorl10`), mayor SJL. Coherente con el patrón vespertino-desfasado: ventanas L5/L10 desplazadas hacia horas tardías (o con mayor actividad acumulada) acompañan al desfase laborable-libre.
+
+Los p-valores corregidos con Holm-Bonferroni sí se calculan (`p_holm_crudo`, `p_holm_parcial`, `p_holm_parcial_c` en `res_circ`) y se persisten en `sjl_correlaciones_circadianas_R.csv`, pero se omiten de la tabla porque con n ≈ `r n_san_circ` todas las correlaciones del top cruzan p < 0.0001 tras Holm, y el test confirma que ρ ≠ 0 pero no discrimina entre asociaciones. ρ es ya un tamaño de efecto estandarizado [−1, 1], así que la lectura se hace directamente sobre ρ.
+
+## 8.3 Forest plot · tres ajustes superpuestos
+
+```{r circ_forest, fig.width = 11, fig.height = 6.5, fig.cap = "Figura 13 · Top 15 correlaciones de Spearman entre SJL y variables circadianas/actigráficas, ordenadas por |ρ parcial (edad + sexo)| (modelo principal). Tres puntos por variable, uno por ajuste: crudo (azul), parcial edad + sexo (rojo, principal), parcial edad + sexo + cronotipo (naranja, sensibilidad). Barra horizontal: IC 95 % bootstrap percentil del estimador parcial (edad + sexo), el principal (B = 1000). Línea vertical discontinua: ρ = 0."}
+top <- res_circ |> slice_head(n = 15) |>
+  mutate(label = acortar_var(variable))
+
+# Bootstrap percentil del ρ parcial (edad + sexo), el estimador principal, con
+# `boot::boot()` (B = 1000). Solo se acompaña de IC el estimador principal;
+# añadir barras a los tres ajustes saturaría el panel.
+set.seed(0)
+ci_top <- map_dfr(top$variable, function(v) {
+  d <- val_sanos_circ |> select(all_of(c(v, PRIMARY, controles_basico))) |> drop_na()
+  b <- boot::boot(d,
+                  statistic = function(data, i) {
+                    suppressWarnings(partial_spearman(data[i, ], v, PRIMARY,
+                                                      controles_basico)$rho_partial)
+                  },
+                  R = 1000)
+  ci <- boot::boot.ci(b, type = "perc")$percent[4:5]
+  tibble(variable = v, rho_lo = ci[1], rho_hi = ci[2])
+})
+top <- top |> left_join(ci_top, by = "variable") |>
+  mutate(label = factor(label, levels = rev(label)))
+
+# Formato largo con un punto por ajuste por variable.
+top_long <- top |>
+  select(label, rho_crudo, rho_parcial, rho_parcial_c) |>
+  pivot_longer(c(rho_crudo, rho_parcial, rho_parcial_c),
+               names_to = "ajuste", values_to = "rho") |>
+  mutate(ajuste = factor(ajuste,
+                         levels = c("rho_crudo", "rho_parcial", "rho_parcial_c"),
+                         labels = c("Crudo",
+                                    "Parcial (edad + sexo)",
+                                    "Parcial (edad + sexo + cronotipo)")))
+
+ggplot(top_long, aes(x = rho, y = label, color = ajuste, shape = ajuste)) +
+  geom_vline(xintercept = 0, color = REF, linetype = "dashed") +
+  geom_linerange(data = top, aes(xmin = rho_lo, xmax = rho_hi, y = label),
+                 inherit.aes = FALSE,
+                 color = ACCENT, alpha = 0.35, linewidth = 0.8) +
+  geom_point(size = 3.2, alpha = 0.85) +
+  scale_color_manual(values = PAL_AJUSTE) +
+  scale_shape_manual(values = SHAPE_AJUSTE) +
+  labs(x = "ρ Spearman", y = NULL, color = "Ajuste", shape = "Ajuste") +
+  theme(legend.position = "bottom",
+        legend.box = "horizontal")
+```
+
+```{r circ_forest_resumen, include = FALSE}
+# Variable del top con mayor separación entre ajustes (para citarla
+# dinámicamente en el párrafo): se elige la de mayor |Δρ| entre crudo y
+# parcial (edad + sexo), el ajuste principal.
+div_top <- top |>
+  mutate(d_crudo_p = abs(rho_crudo - rho_parcial),
+         d_p_pc = abs(rho_parcial - rho_parcial_c)) |>
+  arrange(desc(d_crudo_p))
+var_div <- div_top$variable[1]
+rho_div_crudo <- div_top$rho_crudo[1]
+rho_div_parcial <- div_top$rho_parcial[1]
+rho_div_parcial_c <- div_top$rho_parcial_c[1]
+# Anchura típica del IC bootstrap del crudo en el top
+ic_ancho <- median(top$rho_hi - top$rho_lo, na.rm = TRUE)
+```
+
+Para casi todas las variables los tres puntos se superponen dentro del IC bootstrap del crudo. La mayor separación visible es en `r var_div`, donde el ρ crudo = `r sprintf('%+.2f', rho_div_crudo)` pasa a `r sprintf('%+.2f', rho_div_parcial)` con el ajuste principal (edad + sexo) y a `r sprintf('%+.2f', rho_div_parcial_c)` al añadir el cronotipo como sensibilidad. Los IC bootstrap son estrechos (anchura mediana ≈ `r sprintf('%.2f', ic_ancho)`) por la elevada n: la incertidumbre estadística es despreciable comparada con las diferencias de magnitud entre variables.
+
+## 8.4 Matriz de correlación · top 15
+
+```{r circ_corrplot, fig.width = 10, fig.height = 9, fig.cap = "Figura 14 · Matriz de correlación de Spearman entre el SJL y las 15 variables circadianas/actigráficas del top (las mismas del forest plot en §8.3). Color y tamaño: signo y magnitud (escala ±1). ρ anotada en cada celda. Solo se muestra la mitad superior por simetría."}
+top15 <- res_circ |> slice_head(n = 15) |> pull(variable)
+mat <- val_sanos |>
+  select(all_of(c(PRIMARY, top15))) |>
+  cor(method = "spearman", use = "pairwise.complete.obs")
+
+# Etiquetas truncadas para que quepan a 45º sobre el eje superior.
+short_labels <- str_trunc(c(PRIMARY, top15), 22)
+colnames(mat) <- rownames(mat) <- short_labels
+
+corrplot::corrplot(
+  mat,
+  method = "color",
+  type = "upper",
+  diag = FALSE,
+  order = "original",
+  addCoef.col = "black",
+  number.cex = 0.62,
+  tl.col = HEADER,
+  tl.srt = 45,
+  tl.cex = 0.78,
+  col = colorRampPalette(c(COLOR_SJL, "white", ACCENT))(200),
+  col.lim = c(-1, 1),
+  cl.cex = 0.8,
+  mar = c(0, 0, 1, 0)
+)
+```
+
+La matriz revela que las 15 variables del top no son independientes: se agrupan en dos bloques internamente cohesivos que reproducen las dos familias identificadas en §8.2. Los índices de regularidad y estabilidad (sufijos `_is`, `_cfi`, `_chs`, robustez) muestran correlaciones intra-familia muy altas (sleep_is ↔ sleep_cfi ρ = 0.93, tap_is ↔ tap_cfi ρ = 0.93) y se relacionan negativamente con el bloque de valores y horas L5/L10, que también presenta cohesión interna (tiempomov_valorl10 ↔ intensidad_valorl10 ρ = 0.86; light_valorl5 ↔ light_ra ρ = -0.95). Varias parejas rozan o superan la redundancia (|ρ| > 0.9). Es precisamente esta multicolinealidad, constatada aquí de forma descriptiva, la que justifica que en el modelado predictivo (`machine_learning.Rmd`) se aplique un filtro de colinealidad con umbral |ρ| > 0.9 en los modelos sensibles a ella dentro de cada partición de la validación cruzada, que descarta una de cada par de variables redundantes en lugar de incluirlas juntas como predictores.
+
+## 8.5 SJL y robustez circadiana
+
+La **robustez circadiana** se calcula como `valor_M10_aceleración / valor_L5_tiempo_movimiento`, donde **M10** es la media de aceleración durante las 10 horas consecutivas más activas del día y **L5** la media del tiempo en movimiento durante las 5 horas consecutivas menos activas. Cuantifica el **contraste día-noche** del patrón motor: valores altos indican aceleración vigorosa durante la ventana diurna principal combinada con muy poca actividad durante la ventana de descanso (ritmo bien organizado); valores bajos, un patrón aplanado o fragmentado. La columna `robustez_circadiana_g44` del CRD condensa este índice por sujeto. Aunque ya entra en la batería de §8.2, se presenta aquí con el detalle gráfico que permite inspeccionar la forma de la relación.
+
+```{r rob_circ, fig.width = 9, fig.height = 5.5, fig.cap = "Figura 15 · SJL frente a robustez circadiana (Acel/Tmov). Puntos: sujetos individuales. Curva roja con banda: LOESS con IC 95 %. Línea azul discontinua: regresión lineal de referencia. Anotación interna: ρ de Spearman crudo y parcial (edad + sexo, modelo principal) tomados de §8.2. Eje X truncado al P99 de robustez; eje Y al rango biológico del SJL [0, 6 h]."}
+ROB_VAR <- "robustez_circadiana_g44"
+fila_rob <- res_circ |> filter(variable == ROB_VAR)
+stopifnot(nrow(fila_rob) == 1)
+
+dat_rob <- val_sanos |>
+  select(all_of(c(ROB_VAR, PRIMARY))) |>
+  drop_na()
+
+# Visualización truncada al p99 de robustez: una cola de outliers (máximo
+# ≈ 735, probablemente artefactos de medida) comprime el grueso de los
+# datos contra el eje izquierdo si se muestra el rango completo. El cómputo
+# de ρ (que viene de la batería de 8.2) se hace sobre todos los datos —
+# Spearman es insensible a estos outliers porque opera sobre rangos.
+xlim_max <- quantile(dat_rob[[ROB_VAR]], 0.99, names = FALSE)
+
+# Texto de p Holm calculado dinámicamente: si ambos ajustes cruzan el mismo
+# umbral, se reportan juntos; en otro caso, se desglosa cada uno.
+p_max <- max(fila_rob$p_holm_crudo, fila_rob$p_holm_parcial)
+p_line <- if (fmt_sig(fila_rob$p_holm_crudo) == fmt_sig(fila_rob$p_holm_parcial)) {
+  sprintf("p Holm %s en ambos ajustes", fmt_sig(p_max))
+} else {
+  sprintf("p Holm crudo = %s · p Holm parcial = %s",
+          fmt_p(fila_rob$p_holm_crudo), fmt_p(fila_rob$p_holm_parcial))
+}
+
+anot <- sprintf(
+  "ρ crudo  =  %+.3f\nρ parcial (edad + sexo)  =  %+.3f\n%s\nn = %d",
+  fila_rob$rho_crudo, fila_rob$rho_parcial, p_line, nrow(dat_rob)
+)
+
+ggplot(dat_rob, aes(x = .data[[ROB_VAR]], y = .data[[PRIMARY]])) +
+  geom_point(color = COLOR_SJL, alpha = 0.20, size = 1.2) +
+  geom_smooth(method = "loess", color = ACCENT, fill = ACCENT,
+              alpha = 0.18, linewidth = 0.9, formula = y ~ x, span = 0.7) +
+  geom_smooth(method = "lm", color = HEADER, fill = HEADER,
+              alpha = 0.10, linewidth = 0.6, linetype = "dashed",
+              formula = y ~ x) +
+  annotate("label", x = xlim_max * 0.97, y = 5.7, label = anot,
+           hjust = 1, vjust = 1, size = 3.2, color = HEADER,
+           fill = "white", label.size = 0) +
+  coord_cartesian(xlim = c(0, xlim_max), ylim = c(0, 6)) +
+  labs(x = "Robustez circadiana (Acel/Tmov)",
+       y = sprintf("%s (h)", VAR_LABEL[PRIMARY]))
+```
+
+```{r rob_resumen, include = FALSE}
+med_rob <- median(dat_rob[[ROB_VAR]], na.rm = TRUE)
+```
+
+Asociación negativa de magnitud pequeña (ρ crudo = `r sprintf('%+.3f', fila_rob$rho_crudo)`; ρ parcial edad + sexo = `r sprintf('%+.3f', fila_rob$rho_parcial)`): a mayor robustez del patrón de actividad, menor SJL. La estabilidad del estimador entre el crudo y el ajuste principal descarta confusión demográfica, y el ajuste de sensibilidad por cronotipo tampoco lo mueve sustantivamente (ρ parcial + cronotipo = `r sprintf('%+.3f', fila_rob$rho_parcial_c)`). La forma de la relación es claramente **no lineal**: la LOESS desciende con pendiente pronunciada en el tramo de robustez baja (de ~1.9 h de SJL hacia ~0.8 h al alcanzar robustez ≈ 20) y a partir de ahí se aplana, contrastando con la regresión lineal de referencia, que infraestima el efecto donde se concentra la mayor parte de la cohorte (mediana de robustez = `r sprintf('%.1f', med_rob)`). Los desfases grandes (SJL > 4 h) son casi exclusivos de sujetos con robustez baja: el área de robustez ≥ 20 apenas contiene casos extremos. La amplia dispersión vertical del SJL a cualquier nivel de robustez refleja que esta variable es un predictor parcial, no un determinante.
+
+## 8.6 SJL e indicadores de salud circadiana
+
+El CRD recoge 12 indicadores booleanos de higiene circadiana en tres bloques (luz, actividad y sueño, 4 cada uno). Aquí se analizan con **Mann-Whitney + Cliff's δ** (signo orientado a "δ > 0 ⇔ TRUE tiene mayor SJL"), **IC 95 % bootstrap percentil** (B = 1000) y **corrección Holm** sobre los 12 tests. En el forest plot se destacan dos indicadores por su interés clínico: ≥ 2 h de luz natural diaria (`isluz3`) y < 10 h de sedentarismo (`isactividad1`).
+
+```{r ind_setup}
+# Etiquetas legibles para cada indicador (los nombres del CRD son demasiado
+# largos para una figura).
+LABEL_IND <- c(
+  indicadorluz_duerme_habitualmente_en_oscuridad_total_isluz1 =
+    "Duerme en oscuridad total",
+  indicadorluz_se_expone_regularmente_a_mas_de_7_horas_de_oscuridad_por_noche_isluz2 =
+    "≥ 7 h oscuridad nocturna",
+  indicadorluz_se_suele_exponer_a_mas_de_2_horas_de_luz_natural_en_exteriores_isluz3 =
+    "≥ 2 h luz natural diaria",
+  indicadorluz_su_periodo_de_oscuridad_se_encuentra_entre_las_22_y_las_10_isluz4 =
+    "Oscuridad entre 22 h y 10 h",
+  indicadoractividad_permanece_normalmente_menos_de_10_horas_en_actividad_sedentaria_isactividad1 =
+    "< 10 h sedentarismo diario",
+  indicadoractividad_reposa_habitualmente_al_menos_dos_horas_antes_de_dormir_isactividad2 =
+    "Reposo ≥ 2 h antes de dormir",
+  indicadoractividad_suele_caminar_correr_o_andar_en_bicicleta_al_menos_30_min_al_día_isactividad3 =
+    "≥ 30 min ejercicio diario",
+  indicadoractividad_su_actividad_física_más_intensa_se_produce_entre_las_8_y_las_20_horas_isactividad4 =
+    "Actividad intensa 8 h-20 h",
+  indicadorsueno_duerme_entre_7_y_9_horas_cada_día_issueno1 =
+    "Duerme 7-9 h al día",
+  indicadorsueno_su_siesta_es_menor_de_30_minutos_issueno2 =
+    "Siesta < 30 min",
+  indicadorsueno_se_despierta_todos_los_días_aproximadamente_a_la_misma_hora_issueno3 =
+    "Despertar regular",
+  indicadorsueno_su_sueño_se_produce_entre_las_22_y_las_10_issueno4 =
+    "Sueño entre 22 h y 10 h"
+)
+
+INDICADORES <- names(LABEL_IND)
+INDICADORES_DESTACADOS <- c(
+  "indicadorluz_se_suele_exponer_a_mas_de_2_horas_de_luz_natural_en_exteriores_isluz3",
+  "indicadoractividad_permanece_normalmente_menos_de_10_horas_en_actividad_sedentaria_isactividad1"
+)
+
+# `to_bool` (definido en sección 0.4) tolera strings "TRUE"/"FALSE" del CSV.
+val_ind <- val_sanos |> mutate(across(all_of(INDICADORES), to_bool))
+```
+
+```{r ind_tests}
+set.seed(0)
+res_ind <- map_dfr(INDICADORES, function(v) {
+  d <- val_ind |> select(all_of(c(v, PRIMARY))) |> drop_na()
+  n_T <- sum(d[[v]]); n_F <- sum(!d[[v]])
+  if (n_T < 5 || n_F < 5) {
+    return(tibble(indicador = v, n_T = n_T, n_F = n_F,
+                  median_T = NA_real_, median_F = NA_real_,
+                  iqr_T = NA_character_, iqr_F = NA_character_,
+                  delta = NA_real_, delta_lo = NA_real_, delta_hi = NA_real_,
+                  p = NA_real_))
+  }
+
+  # Cliff's δ con la convención "δ > 0 ⇔ TRUE tiene mayor SJL": al pasar
+  # los dos vectores en orden (TRUE, FALSE) a effectsize::cliffs_delta, el
+  # signo queda controlado por la posición de los argumentos.
+  sjl_T <- d[[PRIMARY]][d[[v]]]
+  sjl_F <- d[[PRIMARY]][!d[[v]]]
+
+  mw <- suppressWarnings(wilcox.test(d[[PRIMARY]] ~ d[[v]]))
+  delta_val <- pluck_cliff(effectsize::cliffs_delta(sjl_T, sjl_F))
+
+  # Bootstrap percentil del δ: en cada muestra remuestreada, se reconstruyen
+  # los dos grupos T/F a partir de los índices `i` y se recalcula δ con la
+  # misma orientación. Si por azar una remuestra queda con < 2 elementos en
+  # alguno de los grupos, se devuelve NA y boot.ci lo ignora.
+  b <- boot::boot(d, statistic = function(data, i) {
+    ind_i <- data[[v]][i]
+    sjl_i <- data[[PRIMARY]][i]
+    sjl_T_i <- sjl_i[ind_i]
+    sjl_F_i <- sjl_i[!ind_i]
+    if (length(sjl_T_i) < 2 || length(sjl_F_i) < 2) return(NA_real_)
+    pluck_cliff(effectsize::cliffs_delta(sjl_T_i, sjl_F_i))
+  }, R = 1000)
+  ci <- boot::boot.ci(b, type = "perc")$percent[4:5]
+
+  # `median_T`/`median_F` se conservan como numéricos para el resumen del
+  # párrafo (pick_ind); `iqr_T`/`iqr_F` ya van como cadena formateada vía
+  # el helper fmt_iqr de §0.3 para usarse directamente en la tabla.
+  tibble(
+    indicador = v,
+    n_T = n_T, n_F = n_F,
+    median_T = median(sjl_T),
+    median_F = median(sjl_F),
+    iqr_T = fmt_iqr(sjl_T),
+    iqr_F = fmt_iqr(sjl_F),
+    delta = delta_val,
+    delta_lo = ci[1], delta_hi = ci[2],
+    p = mw$p.value
+  )
+})
+res_ind$p_holm <- p.adjust(res_ind$p, method = "holm")
+```
+
+```{r ind_table}
+res_ind |>
+  mutate(
+    Bloque = case_when(
+      startsWith(indicador, "indicadorluz_") ~ "Luz",
+      startsWith(indicador, "indicadoractividad_") ~ "Actividad",
+      startsWith(indicador, "indicadorsueno_") ~ "Sueño"
+    ),
+    Indicador = LABEL_IND[indicador],
+    `n (T / F)` = sprintf("%d / %d", n_T, n_F),
+    `SJL TRUE · mediana [IQR]` = iqr_T,
+    `SJL FALSE · mediana [IQR]` = iqr_F,
+    `δ [IC 95 %]` = fmt_ci(delta, delta_lo, delta_hi, signed = TRUE),
+    `p (Holm)` = fmt_p(p_holm),
+    Significancia = fmt_sig(p_holm)
+  ) |>
+  mutate(Bloque = factor(Bloque, levels = c("Luz", "Actividad", "Sueño"))) |>
+  arrange(Bloque, desc(abs(delta))) |>
+  select(Bloque, Indicador, `n (T / F)`,
+         `SJL TRUE · mediana [IQR]`, `SJL FALSE · mediana [IQR]`,
+         `δ [IC 95 %]`, `p (Holm)`, Significancia) |>
+  estilo_kable(caption = sprintf(
+    "Tabla 12 · Mann-Whitney + Cliff's δ entre SJL y los 12 indicadores de salud circadiana. δ > 0: el grupo TRUE (cumple el indicador) tiene mayor SJL que el grupo FALSE. SJL reportado como mediana [IQR] en horas. IC 95 %% por bootstrap percentil (B = 1000). Corrección Holm sobre %d tests.",
+    nrow(res_ind))) |>
+  column_spec(2, width = "16em")
+```
+
+```{r ind_forest, fig.width = 11, fig.height = 6, fig.cap = "Figura 16 · Cliff's δ entre SJL y los 12 indicadores de salud circadiana, con IC 95 % bootstrap percentil (B = 1000). δ > 0: los sujetos que cumplen el indicador (TRUE) tienen mayor SJL. Color: bloque (luz, actividad, sueño). Rombo grande: indicadores de interés clínico explícito (≥ 2 h luz natural diaria y < 10 h sedentarismo). La significación no se anota: con n ≈ 2693 el p-valor cruza p < 0.0001 ante casi cualquier efecto no nulo, así que la lectura se hace sobre δ y su IC, que ya señala el cruce del cero."}
+res_ind_plot <- res_ind |>
+  mutate(
+    label = LABEL_IND[indicador],
+    destacado = indicador %in% INDICADORES_DESTACADOS,
+    bloque = case_when(
+      startsWith(indicador, "indicadorluz_") ~ "Luz",
+      startsWith(indicador, "indicadoractividad_") ~ "Actividad",
+      startsWith(indicador, "indicadorsueno_") ~ "Sueño"
+    ),
+    bloque = factor(bloque, levels = c("Luz", "Actividad", "Sueño"))
+  ) |>
+  arrange(bloque, delta) |>
+  mutate(label = factor(label, levels = unique(label)))
+
+ggplot(res_ind_plot, aes(x = delta, y = label, color = bloque)) +
+  geom_vline(xintercept = 0, color = REF, linetype = "dashed") +
+  geom_linerange(aes(xmin = delta_lo, xmax = delta_hi), linewidth = 0.6) +
+  geom_point(aes(shape = destacado, size = destacado)) +
+  scale_color_manual(values = PAL_BLOQUE) +
+  scale_shape_manual(values = c(`TRUE` = 18, `FALSE` = 16), guide = "none") +
+  scale_size_manual(values = c(`TRUE` = 4.5, `FALSE` = 2.6), guide = "none") +
+  coord_cartesian(xlim = c(-0.6, 0.6)) +
+  labs(x = "Cliff's δ (TRUE − FALSE) + IC 95 % bootstrap",
+       y = NULL, color = "Bloque")
+```
+
+```{r export_fig_forest, include = FALSE}
+p_circ_body <- ggplot(top_long, aes(x = rho, y = label, color = ajuste, shape = ajuste)) +
+  geom_vline(xintercept = 0, color = REF, linetype = "dashed") +
+  geom_linerange(data = top, aes(xmin = rho_lo, xmax = rho_hi, y = label),
+                 inherit.aes = FALSE, color = ACCENT, alpha = 0.35, linewidth = 0.6) +
+  geom_point(size = 2.0, alpha = 0.85) +
+  scale_color_manual(values = PAL_AJUSTE) +
+  scale_shape_manual(values = SHAPE_AJUSTE) +
+  labs(x = "ρ de Spearman", y = NULL, color = "Ajuste", shape = "Ajuste") +
+  theme_tfm(9) +
+  theme(legend.position = "bottom", legend.direction = "vertical")
+
+p_ind_body <- ggplot(res_ind_plot, aes(x = delta, y = label, color = bloque)) +
+  geom_vline(xintercept = 0, color = REF, linetype = "dashed") +
+  geom_linerange(aes(xmin = delta_lo, xmax = delta_hi), linewidth = 0.5) +
+  geom_point(aes(shape = destacado, size = destacado)) +
+  scale_color_manual(values = PAL_BLOQUE) +
+  scale_shape_manual(values = c(`TRUE` = 18, `FALSE` = 16), guide = "none") +
+  scale_size_manual(values = c(`TRUE` = 3.4, `FALSE` = 1.9), guide = "none") +
+  coord_cartesian(xlim = c(-0.6, 0.6)) +
+  labs(x = "Cliff's δ", y = NULL, color = "Bloque") +
+  theme_tfm(9) +
+  theme(legend.position = "bottom")
+
+fig_crono_ind <- (b_crono | p_ind_body) +
+  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")",
+    theme = theme(plot.tag = element_text(face = "bold", color = HEADER, size = 12)))
+dir.create("outputs/memoria/figuras", recursive = TRUE, showWarnings = FALSE)
+ggsave("outputs/memoria/figuras/fig_sjl_cronotipo_ind.png", fig_crono_ind,
+       width = 10.5, height = 6.2, dpi = 200, device = ragg::agg_png)
+```
+
+```{r ind_resumen, include = FALSE}
+pick_ind <- function(key) {
+  row <- res_ind |> filter(grepl(key, indicador, fixed = TRUE))
+  list(delta = row$delta[1], p = row$p_holm[1],
+       med_T = row$median_T[1], med_F = row$median_F[1],
+       n_T = row$n_T[1], n_F = row$n_F[1])
+}
+i_despertar <- pick_ind("issueno3")
+i_7a9 <- pick_ind("issueno1")
+i_22a10 <- pick_ind("issueno4")
+i_siesta <- pick_ind("issueno2")
+i_8a20 <- pick_ind("isactividad4")
+i_reposo <- pick_ind("isactividad2")
+i_ejercicio <- pick_ind("isactividad3")
+i_sed <- pick_ind("isactividad1")
+i_oscuridad <- pick_ind("isluz4")
+i_luz <- pick_ind("isluz3")
+
+# Recuentos por significancia y magnitud para la lectura conjunta del cierre
+n_total <- nrow(res_ind)
+n_sig <- sum(res_ind$p_holm < 0.05)
+n_ns <- n_total - n_sig
+n_grande_sig <- sum(res_ind$p_holm < 0.05 & abs(res_ind$delta) >= 0.474)
+n_med_sig <- sum(res_ind$p_holm < 0.05 & abs(res_ind$delta) >= 0.33 &
+                                         abs(res_ind$delta) < 0.474)
+n_peq_neg_sig <- sum(res_ind$p_holm < 0.05 & abs(res_ind$delta) < 0.33)
+```
+
+La tabla y el forest plot revelan tres patrones organizados por bloque:
+
+- **El bloque "Sueño" concentra los efectos de mayor magnitud**: "Despertar regular" produce el δ más grande de toda la batería (δ = `r sprintf('%+.3f', i_despertar$delta)`, **`r interpreta_cliff(i_despertar$delta)`** según Cliff), con un contraste de medianas de SJL muy marcado (`r sprintf('%.2f', i_despertar$med_T)` h cumpliendo vs `r sprintf('%.2f', i_despertar$med_F)` h no cumpliendo). Es esperable casi por construcción del propio SJL: quien se despierta a la misma hora cada día tiene poco margen para acumular desfase entre laborable y libre. Le siguen "Duerme 7-9 h al día" (δ = `r sprintf('%+.3f', i_7a9$delta)`, `r interpreta_cliff(i_7a9$delta)`) y "Sueño entre 22 h y 10 h" (δ = `r sprintf('%+.3f', i_22a10$delta)`, `r interpreta_cliff(i_22a10$delta)`), ambos en sentido esperado. El cuarto, "Siesta < 30 min", no alcanza significancia (δ = `r sprintf('%+.3f', i_siesta$delta)`, `r fmt_sig(i_siesta$p)`).
+- **El bloque "Actividad" muestra signos mixtos**: "Actividad intensa 8 h-20 h" (δ = `r sprintf('%+.3f', i_8a20$delta)`) y "Reposo ≥ 2 h antes de dormir" (δ = `r sprintf('%+.3f', i_reposo$delta)`) van en la dirección esperada, cumplir el indicador se asocia a menor SJL. Sin embargo, **"≥ 30 min de ejercicio diario" se asocia con MAYOR SJL**, no menor (δ = `r sprintf('%+.3f', i_ejercicio$delta)`, p Holm `r fmt_sig(i_ejercicio$p)`). Hipótesis tentativa: el ejercicio puede ser un correlato de estilos de vida activos que también prolongan la ventana de sueño los días libres y amplían el desfase con los laborables, no un factor causal del SJL sino un acompañante. El cuarto indicador del bloque, "< 10 h sedentarismo diario", no alcanza significancia (δ = `r sprintf('%+.3f', i_sed$delta)`, `r fmt_sig(i_sed$p)`).
+- **El bloque "Luz" es mayoritariamente nulo**: tres de los cuatro indicadores no detectan asociación. El único significativo, "Oscuridad entre 22 h y 10 h" (δ = `r sprintf('%+.3f', i_oscuridad$delta)`, `r interpreta_cliff(i_oscuridad$delta)`), es además el de menor magnitud entre los significativos. **Los dos indicadores clínicamente destacados**, "≥ 2 h de luz natural diaria" (δ = `r sprintf('%+.3f', i_luz$delta)`, `r fmt_sig(i_luz$p)`) y "< 10 h sedentarismo diario" (δ = `r sprintf('%+.3f', i_sed$delta)`, `r fmt_sig(i_sed$p)`) no muestran asociación detectable con el SJL en esta cohorte. Es un resultado **negativo informativo**: los IC bootstrap son estrechos y cubren ampliamente el cero, así que la ausencia de asociación no es atribuible a falta de potencia.
+
+La asimetría de tamaño muestral entre grupos en algunos indicadores (p. ej. n TRUE = `r i_sed$n_T` vs n FALSE = `r i_sed$n_F` en sedentarismo) reduce la potencia del Mann-Whitney y ensancha el IC bootstrap, lectura visible en el forest plot. Con n ≈ `r format(i_despertar$n_T + i_despertar$n_F, big.mark = ".")`, el p-valor cruza p < 0.0001 ante cualquier asimetría real, así que la lectura clínica se hace sobre Cliff δ y sus IC, no sobre la significancia. De los `r n_total` indicadores, `r n_sig` son significativos tras Holm y `r n_ns` no: entre los significativos, solo `r n_grande_sig` alcanza magnitud grande ("Despertar regular"), `r n_med_sig` magnitud mediana ("Duerme 7-9 h al día"), y los `r n_peq_neg_sig` restantes son pequeños o negligibles pese a la significancia.
+
+---
+
+# 9 · SJL y patologías
+
+Regresión logística del SJL frente a tres variables respuesta binarias de patología sobre la cohorte completa (`val`, sanos vs pacientes): patología agregada (`pat_any`), del sueño (`pat_sueno`) y oncológica (`pat_cancer`). Para cada una se reporta el OR del SJL por hora adicional con IC 95 % y p.
+
+#### Estrategia de los tres modelos
+
+| Modelo | Especificación | Rol |
+|---|---|---|
+| **M1 (crudo)** | `pat ~ sjl` | Bivariado |
+| **M2 (+ edad + sexo)** | `pat ~ sjl + edad + sexo` | **Principal** |
+| **M3 (+ cronotipo)** | `pat ~ sjl + edad + sexo + cronotipo` | **Sensibilidad** |
+
+#### Sobre el desbalance entre clases
+
+Las tres variables respuesta tienen 7-16 % de casos. En logística inferencial el desbalance no requiere rebalanceo: el OR de máxima verosimilitud es consistente independientemente de la proporción. La regla operativa es la de Peduzzi (EPV ≥ 10 eventos por parámetro): con 5 parámetros y mínimo 224 casos, EPV ≈ 45. Técnicas tipo SMOTE/upsampling son apropiadas para ML predictivo, no para inferencia, porque distorsionan intercepto y OR.
+
+```{r logit_prep}
+# Dataframe para regresión logística. Se construye sobre la cohorte completa
+# (val), porque comparar sanos vs pacientes requiere ambos grupos.
+df_o <- val |>
+  mutate(
+    edad = .data[[EDAD_NUM]],
+    sexo_M = as.numeric(sexo == "M"),
+    crono = factor(colapsar_cronotipo(.data[[CRONO_COL]]),
+                   levels = c("N", "M", "V")),
+    sjl = .data[[PRIMARY]]
+  )
+```
+
+```{r logit_pathology}
+# Variables respuesta binarias
+df_o <- df_o |>
+  mutate(
+    pat_any = as.integer(!es_sano),
+    pat_sueno = if ("pat_grupo_sueno" %in% names(val))
+                  as.integer(to_bool(pat_grupo_sueno)) else 0L,
+    pat_cancer = if ("pat_grupo_cancer" %in% names(val))
+                  as.integer(to_bool(pat_grupo_cancer)) else 0L
+  )
+
+patologias_lab <- c(pat_any = "Patología agregada",
+                    pat_sueno = "Patología del sueño",
+                    pat_cancer = "Patología oncológica")
+n_pos <- sapply(names(patologias_lab), function(p) sum(df_o[[p]]))
+n_total <- nrow(df_o)
+
+filas_or <- map_dfr(names(patologias_lab), function(pat) {
+  modelos <- list(
+    "M1 (crudo)" = as.formula(paste(pat, "~ sjl")),
+    "M2 (+ edad + sexo)" = as.formula(paste(pat, "~ sjl + edad + sexo_M")),
+    "M3 (+ cronotipo)" = as.formula(paste(pat, "~ sjl + edad + sexo_M + crono"))
+  )
+
+  map2_dfr(modelos, names(modelos), function(f, nombre) {
+    fit <- glm(f, data = df_o, family = binomial())
+    ct <- summary(fit)$coefficients["sjl", ]
+    ci <- confint.default(fit)["sjl", ]
+    tibble(Patología = if (nombre == "M1 (crudo)") patologias_lab[pat] else "",
+           Modelo = nombre,
+           `OR (SJL)` = exp(ct["Estimate"]),
+           `IC 2.5%` = exp(ci[1]),
+           `IC 97.5%` = exp(ci[2]),
+           p = ct["Pr(>|z|)"])
+  })
+})
+
+filas_or |>
+  mutate(
+    `OR (SJL) [IC 95 %]` = fmt_ci(`OR (SJL)`, `IC 2.5%`, `IC 97.5%`),
+    Significancia = fmt_sig(p),
+    p = fmt_p(p)
+  ) |>
+  select(Patología, Modelo, `OR (SJL) [IC 95 %]`, p, Significancia) |>
+  estilo_kable(caption = sprintf(
+    "Tabla 13 · Regresión logística sobre la cohorte completa (n = %d sujetos; positivos: agregada = %d, del sueño = %d, oncológica = %d). OR del SJL por hora adicional con IC 95 %% asintótico (Wald). Tres modelos jerárquicos por variable respuesta.",
+    n_total, n_pos["pat_any"], n_pos["pat_sueno"], n_pos["pat_cancer"]
+  ))
+```
+
+```{r logit_resumen, include = FALSE}
+filas_or_raw <- filas_or |>
+  rename(or_num = `OR (SJL)`, lo_num = `IC 2.5%`, hi_num = `IC 97.5%`)
+
+get_row <- function(idx_pat, modelo) {
+  base <- which(filas_or_raw$Patología != "")
+  start <- base[idx_pat]
+  end <- if (idx_pat < length(base)) base[idx_pat + 1] - 1 else nrow(filas_or_raw)
+  bloque <- filas_or_raw[start:end, ]
+  bloque[bloque$Modelo == modelo, ]
+}
+or_any_m1 <- get_row(1, "M1 (crudo)")
+or_any_m2 <- get_row(1, "M2 (+ edad + sexo)")
+or_any_m3 <- get_row(1, "M3 (+ cronotipo)")
+or_sueno_m1 <- get_row(2, "M1 (crudo)")
+or_sueno_m2 <- get_row(2, "M2 (+ edad + sexo)")
+or_sueno_m3 <- get_row(2, "M3 (+ cronotipo)")
+or_cancer_m1 <- get_row(3, "M1 (crudo)")
+or_cancer_m2 <- get_row(3, "M2 (+ edad + sexo)")
+or_cancer_m3 <- get_row(3, "M3 (+ cronotipo)")
+```
+
+La tabla muestra tres patrones, unidos por un rasgo común: ajustar por la edad no diluye la asociación con el SJL, sino que la refuerza.
+
+- **Patología agregada**: en el modelo crudo la asociación es limítrofe (OR M1 = `r sprintf('%.3f', or_any_m1$or_num)`, IC 95 % [`r sprintf('%.3f', or_any_m1$lo_num)`, `r sprintf('%.3f', or_any_m1$hi_num)`], p = `r fmt_p(or_any_m1$p)`), pero se vuelve significativa al ajustar por edad y sexo (OR M2 = `r sprintf('%.3f', or_any_m2$or_num)`, IC 95 % [`r sprintf('%.3f', or_any_m2$lo_num)`, `r sprintf('%.3f', or_any_m2$hi_num)`], p = `r fmt_p(or_any_m2$p)`) y se refuerza al añadir el cronotipo (OR M3 = `r sprintf('%.3f', or_any_m3$or_num)`, p = `r fmt_p(or_any_m3$p)`). Que el OR crezca con el ajuste en lugar de atenuarse apunta a una confusión negativa por edad: los sujetos de más edad acumulan más patología pero presentan menos SJL, de modo que la edad enmascara la asociación cuando no se controla.
+- **Patología oncológica**: reproduce el mismo patrón con una magnitud comparable, aunque más débil, ya que solo alcanza significación en el modelo plenamente ajustado (OR M3 = `r sprintf('%.3f', or_cancer_m3$or_num)`, IC 95 % [`r sprintf('%.3f', or_cancer_m3$lo_num)`, `r sprintf('%.3f', or_cancer_m3$hi_num)`], p = `r fmt_p(or_cancer_m3$p)`) y queda limítrofe en el crudo (p = `r fmt_p(or_cancer_m1$p)`) y en el demográfico (p = `r fmt_p(or_cancer_m2$p)`). Es coherente con la literatura que vincula la disrupción circadiana crónica con un mayor riesgo oncológico [16].
+- **Patología del sueño**: es la más débil de las tres y no alcanza significación en ninguno de los modelos (OR de `r sprintf('%.3f', or_sueno_m1$or_num)` en el crudo a `r sprintf('%.3f', or_sueno_m3$or_num)` en el ajustado por cronotipo, con el intervalo de confianza cruzando siempre el 1; p = `r fmt_p(or_sueno_m1$p)`, `r fmt_p(or_sueno_m2$p)` y `r fmt_p(or_sueno_m3$p)` en los tres modelos). El resultado puede parecer contraintuitivo, ya que cabría esperar que el SJL fuese el predictor más natural de la patología del sueño, pero refleja que los grandes diagnósticos clínicos del sueño (insomnio crónico, apnea, síndrome de piernas inquietas) tienen determinantes más potentes que el SJL.
+
+En conjunto, y una vez descontado el efecto de la edad, el SJL se asocia con la presencia de **patología agregada** y, de forma más débil, con la **patología oncológica**, mientras que no se detecta asociación con la patología del sueño diagnosticada. Que el ajuste refuerce los OR en lugar de diluirlos respalda la lectura del SJL como marcador de riesgo de enfermedad general, con la estructura etaria de la cohorte ocultando parte de la señal en la mirada sin ajustar.
+
+---
+
+# 10 · Resumen y próximos pasos
+
+## 10.1 Hallazgos principales
+
+```{r resumen_final, include = FALSE}
+# Pico etario: se calcula sobre las seis medianas de §4 para que el
+# resultado sea robusto a redistribuciones del máximo entre franjas.
+meds_age <- c("13-17" = med_1317, "18-24" = med_1824, "25-40" = med_2540,
+              "41-50" = med_4150, "51-64" = med_5164, "≥65" = med_65)
+pico_edad <- names(meds_age)[which.max(meds_age)]
+
+# Diferencia mediana entre vespertinos y matutinos
+sub_crono <- val_sanos |>
+  mutate(crono_v = .data[[CRONO_COL]], sjl_v = .data[[PRIMARY]])
+med_matutino <- median(sub_crono$sjl_v[sub_crono$crono_v == "Cronotipo matutino"])
+diff_v_m <- med_v - med_matutino
+```
+
+- **Magnitud y prevalencia**: la mediana del SJL en la cohorte sana es `r sprintf('%.2f', med_sjl)` h [IQR `r sprintf('%.2f', q1_sjl)`–`r sprintf('%.2f', q3_sjl)` h], con asimetría positiva. El `r sprintf('%.1f', pct_1h)` % de los sujetos supera 1 h de SJL y el `r sprintf('%.1f', pct_2h)` % supera 2 h.
+- **Direccionalidad**: el `r sprintf('%.1f', pct_tardio_sjl)` % presenta MSF > MSW, confirmando el patrón mayoritario de retraso vespertino en días libres.
+- **Recuperación de sueño en días libres**: los días libres se duerme `r sprintf('%.0f', delta_sd*60)` min más que los laborables (Δ SD = `r sprintf('%+.2f', delta_sd)` h), con el fin de sueño desplazado `r sprintf('%.0f', delta_se*60)` min y el inicio `r sprintf('%.0f', delta_so*60)` min, con el desplazamiento mayor en el fin que en el inicio, así que el SJL surge sobre todo de levantarse más tarde y solo se recupera deuda de manera parcial.
+- **Edad**: el SJL desciende con la edad de forma escalonada, con pico en la franja **`r pico_edad` años** y mesetas separadas por transiciones puntuales. El salto más marcado se da en la transición 51-64 → ≥65 años (Cliff δ = `r sprintf('%+.3f', p_jubilacion$cliff)`), compatible con la pérdida de rigidez horaria asociada a la jubilación.
+- **Sexo**: efecto negligible y no significativo (Cliff δ = `r sprintf('%+.3f', cd_val)`; el ajuste por edad mediante rank-ANCOVA tampoco cambia la conclusión).
+- **Cronotipo**: los cronotipos vespertinos tienen un SJL `r sprintf('%+.2f', diff_v_m)` h mayor que los matutinos. Los cronotipos extremos no añaden señal sustantiva respecto a sus categorías regulares (los pares vespertino-extremo vs vespertino y matutino vs matutino-extremo son indistinguibles).
+- **IMC**: independencia entre SJL e IMC desde las tres perspectivas analizadas, con Spearman ρ = `r sprintf('%+.3f', rho_sp$estimate)` (parcial por edad y sexo casi idéntica), Kruskal-Wallis no significativo entre las cuatro categorías OMS, y Cliff δ = `r sprintf('%+.3f', cd_sjl2_v)` (IC 95 % cruza el cero) entre sujetos con SJL ≥ 2 h y < 2 h.
+- **Indicadores de higiene circadiana**: de los 12 indicadores analizados, "Despertar regular" produce el efecto más fuerte de todo el análisis (Cliff δ = `r sprintf('%+.3f', i_despertar$delta)`, **grande**), seguido por "Duerme 7-9 h al día" (δ = `r sprintf('%+.3f', i_7a9$delta)`, mediano). El bloque de exposición a la luz es mayoritariamente nulo: tres de cuatro indicadores no detectan asociación con el SJL.
+- **Patologías**: tras ajustar por edad, cada hora adicional de SJL se asocia con mayor probabilidad de patología agregada (OR M2 = `r sprintf('%.3f', or_any_m2$or_num)`, p = `r fmt_p(or_any_m2$p)`) y, de forma más débil, de patología oncológica, significativa solo en el modelo plenamente ajustado (OR M3 = `r sprintf('%.3f', or_cancer_m3$or_num)`, p = `r fmt_p(or_cancer_m3$p)`). El ajuste por edad refuerza los OR en lugar de diluirlos, reflejo de una confusión negativa, y no se detecta asociación con la patología del sueño diagnosticada.
+
+## 10.2 Comparación con la literatura
+
+| Fenómeno | Cohorte propia | Literatura |
+|---|---|---|
+| Mediana SJL (adultos) | `r sprintf('%.2f', med_sjl)` h | 0.5–1.5 h [2] |
+| % ≥ 1 h | `r sprintf('%.1f', pct_1h)` % | ≈ 69 % en la base MCTQ global [2] |
+| Pico edad del SJL/cronotipo | franja `r pico_edad` años | final de la adolescencia, cambio agudo en torno a los 20 años [11] |
+| Recuperación de sueño en libres (Δ SD) | `r sprintf('%+.2f', delta_sd)` h | recuperación parcial en libres, decreciente con la edad [1, 4, 13] |
+| Vespertinos − matutinos | `r sprintf('%+.2f', diff_v_m)` h | mayor SJL en vespertinos [5, 17] |
+| ρ SJL ~ IMC (crudo) | `r sprintf('%+.3f', rho_sp$estimate)` | r = 0.12 (IC 95 % 0.07–0.17, k = 43, n ≈ 231 600) [15] |
+
+> **Nota sobre el pico edad**: la franja `r pico_edad` años cae dentro del recorrido de "adolescencia tardía" descrito en [11]; el aparente desplazamiento respecto al pico canónico ~20 años se debe a la **discretización en franjas amplias** (la primera cubre 13-17 años), no a una divergencia real con la literatura.
+
+## 10.3 Del análisis inferencial al modelo predictivo
+
+El análisis inferencial ha caracterizado el SJL como un fenómeno con asociaciones individualmente modestas (|ρ| ≤ 0.40 en las correlaciones con variables circadianas/actigráficas, con la regularidad del sueño como predictor más fuerte; OR del orden del 15-18 % por hora adicional con patología en los modelos ajustados) pero ampliamente distribuidas entre múltiples predictores. Esta estructura (dimensionalidad alta, asociaciones modestas, interacciones probables entre variables y no linealidades visibles en algunas relaciones, p. ej. la curva LOESS del SJL frente a robustez circadiana) excede lo que los modelos lineales aditivos pueden capturar sin especificación explícita y motiva pasar de la inferencia al modelado predictivo. El análisis se prolonga en un cuaderno separado (`machine_learning.Rmd`) que aplica técnicas no lineales sobre la cohorte preparada para tal fin en el preprocesamiento.
+
+---
+
+# Referencias
+
+1. Wittmann M, Dinich J, Merrow M, Roenneberg T. Social jetlag: misalignment of biological and social time. *Chronobiol Int.* 2006;23(1-2):497-509.
+2. Roenneberg T, Allebrandt KV, Merrow M, Vetter C. Social jetlag and obesity. *Curr Biol.* 2012;22(10):939-943.
+3. Wilkinson L, APA Task Force on Statistical Inference. Statistical methods in psychology journals: guidelines and explanations. *Am Psychol.* 1999;54(8):594-604.
+4. Roenneberg T, Pilz LK, Zerbini G, Winnebeck EC. Chronotype and social jetlag: a (self-)critical review. *Biology.* 2019;8(3):54.
+5. Wong PM, Hasler BP, Kamarck TW, Muldoon MF, Manuck SB. Social jetlag, chronotype, and cardiometabolic risk. *J Clin Endocrinol Metab.* 2015;100(12):4612-4620.
+6. Jankowski KS. Social jet lag: sleep-corrected formula. *Chronobiol Int.* 2017;34(4):531-535.
+7. Henderson SEM, Brady EM, Robertson N. Associations between social jetlag and mental health in young people: a systematic review. *Chronobiol Int.* 2019;36(10):1316-1333.
+8. Koopman ADM, Rauh SP, van 't Riet E, et al. The association between social jetlag, the metabolic syndrome, and type 2 diabetes mellitus in the general population: the New Hoorn Study. *J Biol Rhythms.* 2017;32(4):359-368.
+9. Parsons MJ, Moffitt TE, Gregory AM, et al. Social jetlag, obesity and metabolic disorder: investigation in a cohort study. *Int J Obes.* 2015;39(5):842-848.
+10. Ghasemi A, Zahediasl S. Normality tests for statistical analysis: a guide for non-statisticians. *Int J Endocrinol Metab.* 2012;10(2):486-489.
+11. Roenneberg T, Kuehnle T, Pramstaller PP, et al. A marker for the end of adolescence. *Curr Biol.* 2004;14(24):R1038-R1039.
+12. Bonmatí-Carrión MÁ, Vicente-Martínez J, Madrid JA, Rol MA. The interplay among sleep patterns, social habits, and environmental cues: insights from the Spanish population. *Front Physiol.* 2024;15:1323127.
+13. Gottlieb E, Gupta S, Gahan L, Raymann RJ, Watson NF. Social jetlag decreases across the lifespan: a prospective big data analysis of objective sleep metrics. *J Sleep Res.* 2025;34(4):e14433.
+14. Quade D. Rank analysis of covariance. *J Am Stat Assoc.* 1967;62(320):1187-1200.
+15. Arab A, Karimi E, Garaulet M, Scheer FAJL. Social jetlag and obesity: a systematic review and meta-analysis. *Obes Rev.* 2024;25(3):e13664.
+16. Masri S, Sassone-Corsi P. The emerging link between cancer, metabolism, and circadian rhythms. *Nat Med.* 2018;24(12):1795-1803.
+17. Levandovski R, Dantas G, Fernandes LC, et al. Depression scores associate with chronotype and social jetlag in a rural population. *Chronobiol Int.* 2011;28(9):771-778.
+
+---
+
+## Entorno de ejecución
+
+Versiones de R y de los paquetes con las que se generó este análisis, para reproducibilidad exacta de los resultados.
+
+```{r session-info}
+sessionInfo()
+```

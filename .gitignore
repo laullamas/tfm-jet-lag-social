@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────
+# Datos: NUNCA al repositorio (contienen PII de pacientes)
+# ─────────────────────────────────────────────────────────────
+data/
+*.csv
+*.xlsx
+*.parquet
+
+# Credenciales y entorno
+.env
+.Renviron
+
+# Artefactos de render (knitr / RMarkdown). Los HTML de html/ se
+# añaden de forma explícita; el resto de artefactos se ignora.
+*_cache/
+*_files/
+/*.html
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# Python / Jupyter
+__pycache__/
+.ipynb_checkpoints/
+.venv/
+
+# Sistema
+.DS_Store
+Thumbs.db
